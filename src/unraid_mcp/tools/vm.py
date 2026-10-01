@@ -45,7 +45,7 @@ async def do_start_vm(client: UnraidClient, vm_id: str, confirm: bool) -> dict[s
 
 
 async def do_stop_vm(client: UnraidClient, vm_id: str, confirm: bool) -> dict[str, Any]:
-    require_confirm(confirm, f"stop VM '{vm_id}'")
+    require_confirm(confirm, _stop_vm_consequence(vm_id))
     return shape_mutation_result(await client.execute(queries.VM_STOP, {"id": vm_id}))
 
 
@@ -60,48 +60,58 @@ async def do_resume_vm(client: UnraidClient, vm_id: str, confirm: bool) -> dict[
 
 
 async def do_reboot_vm(client: UnraidClient, vm_id: str, confirm: bool) -> dict[str, Any]:
-    require_confirm(confirm, f"reboot VM '{vm_id}'")
+    require_confirm(confirm, _reboot_vm_consequence(vm_id))
     return shape_mutation_result(await client.execute(queries.VM_REBOOT, {"id": vm_id}))
 
 
 async def do_force_stop_vm(client: UnraidClient, vm_id: str, confirm: bool) -> dict[str, Any]:
-    require_confirm(confirm, f"force-stop VM '{vm_id}' (hard power off)")
+    require_confirm(confirm, _force_stop_vm_consequence(vm_id))
     return shape_mutation_result(await client.execute(queries.VM_FORCE_STOP, {"id": vm_id}))
 
 
 async def do_reset_vm(client: UnraidClient, vm_id: str, confirm: bool) -> dict[str, Any]:
-    require_confirm(
-        confirm, f"hard-reset VM '{vm_id}' (like the reset button — unsaved guest state is lost)"
-    )
+    require_confirm(confirm, _reset_vm_consequence(vm_id))
     return shape_mutation_result(await client.execute(queries.VM_RESET, {"id": vm_id}))
+
+
+def _stop_vm_consequence(vm_id: str) -> str:
+    return f"stop VM '{vm_id}'"
+
+
+def _reboot_vm_consequence(vm_id: str) -> str:
+    return f"reboot VM '{vm_id}'"
+
+
+def _force_stop_vm_consequence(vm_id: str) -> str:
+    return f"force-stop VM '{vm_id}' (hard power off)"
+
+
+def _reset_vm_consequence(vm_id: str) -> str:
+    return f"hard-reset VM '{vm_id}' (like the reset button — unsaved guest state is lost)"
 
 
 def _confirm_stop_vm(
     ctx: Context, confirm: bool, vm_id: str
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(ctx, confirm, f"stop VM '{vm_id}'")
+    return require_confirmation(ctx, confirm, _stop_vm_consequence(vm_id))
 
 
 def _confirm_reboot_vm(
     ctx: Context, confirm: bool, vm_id: str
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(ctx, confirm, f"reboot VM '{vm_id}'")
+    return require_confirmation(ctx, confirm, _reboot_vm_consequence(vm_id))
 
 
 def _confirm_force_stop_vm(
     ctx: Context, confirm: bool, vm_id: str
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(ctx, confirm, f"force-stop VM '{vm_id}' (hard power off)")
+    return require_confirmation(ctx, confirm, _force_stop_vm_consequence(vm_id))
 
 
 def _confirm_reset_vm(
     ctx: Context, confirm: bool, vm_id: str
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(
-        ctx,
-        confirm,
-        f"hard-reset VM '{vm_id}' (like the reset button — unsaved guest state is lost)",
-    )
+    return require_confirmation(ctx, confirm, _reset_vm_consequence(vm_id))
 
 
 def register(mcp: MCPServer, settings: Settings) -> None:

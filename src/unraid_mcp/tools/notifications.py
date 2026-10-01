@@ -61,7 +61,7 @@ async def do_archive_notification(
 async def do_archive_all(
     client: UnraidClient, importance: str | None, confirm: bool
 ) -> dict[str, Any]:
-    require_confirm(confirm, "archive all notifications")
+    require_confirm(confirm, _archive_all_consequence(importance))
     return shape_mutation_result(
         await client.execute(queries.ARCHIVE_ALL_NOTIFICATIONS, {"importance": importance})
     )
@@ -79,7 +79,7 @@ async def do_unread_notification(
 async def do_delete_notification(
     client: UnraidClient, notification_id: str, notification_type: str, confirm: bool
 ) -> dict[str, Any]:
-    require_confirm(confirm, f"permanently delete notification '{notification_id}'")
+    require_confirm(confirm, _delete_notification_consequence(notification_id))
     return shape_mutation_result(
         await client.execute(
             queries.DELETE_NOTIFICATION, {"id": notification_id, "type": notification_type}
@@ -118,7 +118,7 @@ async def do_unarchive_all(
 
 
 async def do_delete_archived_notifications(client: UnraidClient, confirm: bool) -> dict[str, Any]:
-    require_confirm(confirm, "permanently delete ALL archived notifications (irreversible)")
+    require_confirm(confirm, _DELETE_ARCHIVED_CONSEQUENCE)
     return shape_mutation_result(await client.execute(queries.DELETE_ARCHIVED_NOTIFICATIONS))
 
 
@@ -150,26 +150,35 @@ async def do_create_notification(
     )
 
 
+def _archive_all_consequence(importance: str | None) -> str:
+    if importance:
+        return f"archive all {importance} notifications"
+    return "archive all notifications"
+
+
+def _delete_notification_consequence(notification_id: str) -> str:
+    return f"permanently delete notification '{notification_id}'"
+
+
+_DELETE_ARCHIVED_CONSEQUENCE = "permanently delete ALL archived notifications (irreversible)"
+
+
 def _confirm_archive_all_notifications(
-    ctx: Context, confirm: bool
+    ctx: Context, confirm: bool, importance: str | None = None
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(ctx, confirm, "archive all notifications")
+    return require_confirmation(ctx, confirm, _archive_all_consequence(importance))
 
 
 def _confirm_delete_notification(
     ctx: Context, confirm: bool, notification_id: str
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(
-        ctx, confirm, f"permanently delete notification '{notification_id}'"
-    )
+    return require_confirmation(ctx, confirm, _delete_notification_consequence(notification_id))
 
 
 def _confirm_delete_archived_notifications(
     ctx: Context, confirm: bool
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(
-        ctx, confirm, "permanently delete ALL archived notifications (irreversible)"
-    )
+    return require_confirmation(ctx, confirm, _DELETE_ARCHIVED_CONSEQUENCE)
 
 
 def register(mcp: MCPServer, settings: Settings) -> None:

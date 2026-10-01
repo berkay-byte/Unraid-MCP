@@ -25,10 +25,11 @@ cancel, or leaving that field unchecked returns `cancelled by user` before any
 Unraid API request.
 
 On MCP 2026-07-28 clients, the SDK returns `InputRequiredResult` and resumes after
-the client supplies the human's response. Older clients that declare elicitation
-support receive a live `elicitation/create` request. Clients without form
-elicitation support, including URL-only clients, retain the existing
-`confirm=true` behavior. A bare `elicitation: {}` declaration counts as form
+the client supplies the human's response. Legacy (<= 2025-11-25) clients receive a live
+`elicitation/create` request only over stdio. Legacy clients over streamable HTTP
+are served statelessly, with no server-to-client channel, so they stay
+**confirm-only**. Clients without form elicitation support, including URL-only
+clients, also retain the existing `confirm=true` behavior. A bare `elicitation: {}` declaration counts as form
 support. The host is responsible for presenting the prompt to a human.
 
 Non-destructive `MUTATING` tools require `confirm=true` only, to avoid prompting

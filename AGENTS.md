@@ -59,8 +59,10 @@ uv run python scripts/check_schema_drift.py         # PASS/FAIL per op, non-zero
   human confirmation through `_base.require_confirmation(ctx, confirm, consequence)`
   using the same exact consequence. Clients with form elicitation must accept;
   decline, cancel, or unchecked approval raises `ToolError("cancelled by user")`
-  with no HTTP request. Clients without form elicitation retain `confirm=true`
-  only. Non-destructive `MUTATING` tools stay on `require_confirm` only.
+  with no HTTP request. Elicitation is delivered only where it can reach the
+  client: MCP >= 2026-07-28 (any transport) or legacy clients on stdio. Legacy
+  clients over (stateless) HTTP, and clients without form elicitation, retain
+  `confirm=true` only. Non-destructive `MUTATING` tools stay on `require_confirm` only.
 - The API key and bearer token must never appear in logs, error messages, or
   tool output (`SecretStr` + redaction filters in `logging.py`).
 - Logs go to **stderr only** — stdout carries the stdio JSON-RPC stream.

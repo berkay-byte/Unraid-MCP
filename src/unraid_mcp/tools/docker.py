@@ -248,7 +248,7 @@ async def do_start_container(
 async def do_stop_container(
     client: UnraidClient, container_id: str, confirm: bool
 ) -> dict[str, Any]:
-    require_confirm(confirm, f"stop container '{container_id}'")
+    require_confirm(confirm, _stop_container_consequence(container_id))
     result = await client.execute(queries.STOP_CONTAINER, {"id": container_id})
     return shape_mutation_result(result)
 
@@ -263,7 +263,7 @@ async def do_restart_container(
     original stop-then-start sequence — not atomic; if start fails the
     container is left stopped.
     """
-    require_confirm(confirm, f"restart container '{container_id}'")
+    require_confirm(confirm, _restart_container_consequence(container_id))
     try:
         result = await client.execute(queries.RESTART_CONTAINER, {"id": container_id})
     except UnraidGraphQLError as exc:
@@ -312,7 +312,7 @@ async def do_update_container(
     api_version: str | None = None,
 ) -> dict[str, Any]:
     """Pull the latest image for one container and recreate it."""
-    require_confirm(confirm, f"update (pull + recreate) container '{container_id}'")
+    require_confirm(confirm, _update_container_consequence(container_id))
     if not container_id or not container_id.strip():
         raise ToolError(
             "container_id must be a non-empty container id (see list_docker_containers)."
@@ -334,18 +334,8 @@ async def do_update_containers(
     api_version: str | None = None,
 ) -> list[dict[str, Any]]:
     """Pull the latest image for a batch of containers and recreate them."""
-    require_confirm(
-        confirm, f"update (pull + recreate) {len(container_ids)} container(s): {container_ids}"
-    )
-    if not container_ids:
-        raise ToolError(
-            "container_ids must be a non-empty list of container ids (see list_docker_containers)."
-        )
-    if len(container_ids) > MAX_UPDATE_CONTAINERS:
-        raise ToolError(
-            f"Too many container ids: {len(container_ids)} exceeds the maximum of "
-            f"{MAX_UPDATE_CONTAINERS} per call. Split the update into smaller batches."
-        )
+    require_confirm(confirm, _update_containers_consequence(container_ids))
+    _validate_container_ids(container_ids)
     try:
         result = await client.execute(queries.UPDATE_CONTAINERS, {"ids": container_ids})
     except UnraidGraphQLError as exc:
@@ -365,7 +355,7 @@ async def do_update_all_containers(
     api_version: str | None = None,
 ) -> list[dict[str, Any]]:
     """Pull + recreate EVERY container that has an available image update."""
-    require_confirm(confirm, "update (pull + recreate) EVERY container with an available update")
+    require_confirm(confirm, _UPDATE_ALL_CONSEQUENCE)
     try:
         result = await client.execute(queries.UPDATE_ALL_CONTAINERS)
     except UnraidGraphQLError as exc:
@@ -381,12 +371,7 @@ async def do_remove_container(
     with_image: bool = False,
     confirm: bool = False,
 ) -> dict[str, Any]:
-    consequence = f"remove container '{container_id}' (irreversible)"
-    if with_image:
-        consequence = (
-            f"remove container '{container_id}' AND delete its underlying image (irreversible)"
-        )
-    require_confirm(confirm, consequence)
+    require_confirm(confirm, _remove_container_consequence(container_id, with_image))
     if not container_id or not container_id.strip():
         raise ToolError(
             "container_id must be a non-empty container id (see list_docker_containers)."
@@ -397,51 +382,82 @@ async def do_remove_container(
     return shape_mutation_result(result)
 
 
+def _validate_container_ids(container_ids: list[str]) -> None:
+    if not container_ids:
+        raise ToolError(
+            "container_ids must be a non-empty list of container ids (see list_docker_containers)."
+        )
+    if len(container_ids) > MAX_UPDATE_CONTAINERS:
+        raise ToolError(
+            f"Too many container ids: {len(container_ids)} exceeds the maximum of "
+            f"{MAX_UPDATE_CONTAINERS} per call. Split the update into smaller batches."
+        )
+
+
+def _stop_container_consequence(container_id: str) -> str:
+    return f"stop container '{container_id}'"
+
+
+def _restart_container_consequence(container_id: str) -> str:
+    return f"restart container '{container_id}'"
+
+
+def _update_container_consequence(container_id: str) -> str:
+    return f"update (pull + recreate) container '{container_id}'"
+
+
+def _update_containers_consequence(container_ids: list[str]) -> str:
+    return f"update (pull + recreate) {len(container_ids)} container(s): {container_ids}"
+
+
+def _remove_container_consequence(container_id: str, with_image: bool) -> str:
+    if with_image:
+        return f"remove container '{container_id}' AND delete its underlying image (irreversible)"
+    return f"remove container '{container_id}' (irreversible)"
+
+
+_UPDATE_ALL_CONSEQUENCE = "update (pull + recreate) EVERY container with an available update"
+
+
 def _confirm_stop_docker_container(
     ctx: Context, confirm: bool, container_id: str
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(ctx, confirm, f"stop container '{container_id}'")
+    return require_confirmation(ctx, confirm, _stop_container_consequence(container_id))
 
 
 def _confirm_restart_docker_container(
     ctx: Context, confirm: bool, container_id: str
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(ctx, confirm, f"restart container '{container_id}'")
+    return require_confirmation(ctx, confirm, _restart_container_consequence(container_id))
 
 
 def _confirm_update_docker_container(
     ctx: Context, confirm: bool, container_id: str
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(
-        ctx, confirm, f"update (pull + recreate) container '{container_id}'"
-    )
+    return require_confirmation(ctx, confirm, _update_container_consequence(container_id))
 
 
 def _confirm_update_docker_containers(
     ctx: Context, confirm: bool, container_ids: list[str]
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(
-        ctx, confirm, f"update (pull + recreate) {len(container_ids)} container(s): {container_ids}"
-    )
+    # Refuse bad input before prompting a human about it.
+    require_confirm(confirm, _update_containers_consequence(container_ids))
+    _validate_container_ids(container_ids)
+    return require_confirmation(ctx, confirm, _update_containers_consequence(container_ids))
 
 
 def _confirm_remove_docker_container(
     ctx: Context, confirm: bool, container_id: str, with_image: bool
 ) -> Confirmation | Elicit[Confirmation]:
-    consequence = f"remove container '{container_id}' (irreversible)"
-    if with_image:
-        consequence = (
-            f"remove container '{container_id}' AND delete its underlying image (irreversible)"
-        )
-    return require_confirmation(ctx, confirm, consequence)
+    return require_confirmation(
+        ctx, confirm, _remove_container_consequence(container_id, with_image)
+    )
 
 
 def _confirm_update_all_docker_containers(
     ctx: Context, confirm: bool
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(
-        ctx, confirm, "update (pull + recreate) EVERY container with an available update"
-    )
+    return require_confirmation(ctx, confirm, _UPDATE_ALL_CONSEQUENCE)
 
 
 def register(mcp: MCPServer, settings: Settings) -> None:

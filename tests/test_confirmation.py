@@ -31,6 +31,7 @@ DESTRUCTIVE_CALLS = [
     ("force_stop_vm", {"vm_id": "vm1"}),
     ("reset_vm", {"vm_id": "vm1"}),
     ("archive_all_notifications", {}),
+    ("archive_all_notifications", {"importance": "ALERT"}),
     ("delete_notification", {"notification_id": "note1", "notification_type": "UNREAD"}),
     ("delete_archived_notifications", {}),
 ]
@@ -193,7 +194,15 @@ async def test_all_destructive_tools_without_elicitation(settings_factory, mode,
     "capability,supports_form",
     [(None, False), ({}, True), ({"form": {}}, True), ({"url": {}}, False)],
 )
-def test_confirmation_capability_modes(capability, supports_form):
+@pytest.mark.parametrize(
+    "version,can_send,delivers",
+    [
+        ("2026-07-28", False, True),  # MRTR path, no back channel needed
+        ("2025-11-25", True, True),  # legacy with a live back channel (stdio)
+        ("2025-11-25", False, False),  # legacy stateless HTTP: confirm-only
+    ],
+)
+def test_confirmation_capability_modes(capability, supports_form, version, can_send, delivers):
     from types import SimpleNamespace
 
     from mcp.server.mcpserver import Elicit
@@ -201,11 +210,69 @@ def test_confirmation_capability_modes(capability, supports_form):
 
     from unraid_mcp.tools._base import Confirmation, require_confirmation
 
-    ctx = SimpleNamespace(client_capabilities=ClientCapabilities(elicitation=capability))
+    ctx = SimpleNamespace(
+        client_capabilities=ClientCapabilities(elicitation=capability),
+        protocol_version=version,
+        request_context=SimpleNamespace(session=SimpleNamespace(can_send_request=can_send)),
+    )
     result = require_confirmation(ctx, True, "stop storage")
-    if supports_form:
+    if supports_form and delivers:
         assert isinstance(result, Elicit)
         assert result.message == "stop storage"
     else:
         assert isinstance(result, Confirmation)
         assert result.proceed is True
+
+
+@pytest.mark.parametrize("mode,elicits", [("legacy", False), ("auto", True)])
+async def test_stateless_http_confirmation(settings_factory, mode, elicits):
+    """Legacy clients over stateless HTTP have no back channel: confirm-only, and
+    the destructive tool must stay usable. Modern clients still elicit (MRTR)."""
+    import httpx2
+    from mcp.client.streamable_http import streamable_http_client
+
+    from unraid_mcp.server import http_app
+
+    messages = []
+
+    async def elicit(context, params):
+        assert len(respx.calls) == 0
+        messages.append(params.message)
+        return ElicitResult(action="accept", content={"proceed": True})
+
+    with respx.mock:
+        route = respx.post(URL).mock(return_value=httpx.Response(200, json={"data": {}}))
+        settings = settings_factory(allow_mutations=True, transport="streamable-http", port=8000)
+        app = http_app(build_server(settings), settings)
+        async with app.router.lifespan_context(app):
+            transport = httpx2.ASGITransport(app=app)
+            async with httpx2.AsyncClient(
+                transport=transport, base_url="http://localhost:8000"
+            ) as http:
+                stream = streamable_http_client("http://localhost:8000/mcp", http_client=http)
+                async with Client(stream, mode=mode, elicitation_callback=elicit) as client:
+                    respx.calls.clear()
+                    route.calls.clear()
+                    assert "confirm=true" in error_text(await client.call_tool("stop_array", {}))
+                    assert len(respx.calls) == 0
+                    result = await client.call_tool("stop_array", {"confirm": True})
+                    assert not result.is_error
+                    assert route.call_count == 1
+                    assert bool(messages) is elicits
+
+
+@pytest.mark.parametrize("ids", [[], [f"c{i}" for i in range(21)]])
+async def test_invalid_batch_refused_before_prompt(settings_factory, ids):
+    async def elicit(context, params):
+        pytest.fail("Invalid input must be rejected before prompting the human")
+
+    with respx.mock:
+        respx.post(URL).mock(return_value=httpx.Response(200, json={"data": {}}))
+        mcp = build_server(settings_factory(allow_mutations=True))
+        async with Client(mcp, elicitation_callback=elicit) as client:
+            respx.calls.clear()
+            result = await client.call_tool(
+                "update_docker_containers", {"container_ids": ids, "confirm": True}
+            )
+            assert result.is_error
+            assert len(respx.calls) == 0

@@ -77,7 +77,7 @@ async def do_start_array(client: UnraidClient, confirm: bool) -> dict[str, Any]:
 
 
 async def do_stop_array(client: UnraidClient, confirm: bool) -> dict[str, Any]:
-    require_confirm(confirm, "stop the Unraid array (this unmounts all disks)")
+    require_confirm(confirm, _stop_array_consequence())
     return shape_mutation_result(await client.execute(queries.STOP_ARRAY))
 
 
@@ -115,7 +115,7 @@ def _require_disk_id(disk_id: str) -> None:
 
 
 async def do_mount_array_disk(client: UnraidClient, disk_id: str, confirm: bool) -> dict[str, Any]:
-    require_confirm(confirm, f"mount disk '{disk_id}' in the array (brings the disk online)")
+    require_confirm(confirm, _mount_array_disk_consequence(disk_id))
     _require_disk_id(disk_id)
     return shape_mutation_result(await client.execute(queries.MOUNT_ARRAY_DISK, {"id": disk_id}))
 
@@ -123,11 +123,7 @@ async def do_mount_array_disk(client: UnraidClient, disk_id: str, confirm: bool)
 async def do_unmount_array_disk(
     client: UnraidClient, disk_id: str, confirm: bool
 ) -> dict[str, Any]:
-    require_confirm(
-        confirm,
-        f"unmount disk '{disk_id}' from the array "
-        "(data on it becomes inaccessible until remounted)",
-    )
+    require_confirm(confirm, _unmount_array_disk_consequence(disk_id))
     _require_disk_id(disk_id)
     return shape_mutation_result(await client.execute(queries.UNMOUNT_ARRAY_DISK, {"id": disk_id}))
 
@@ -135,11 +131,7 @@ async def do_unmount_array_disk(
 async def do_clear_disk_statistics(
     client: UnraidClient, disk_id: str, confirm: bool
 ) -> dict[str, Any]:
-    require_confirm(
-        confirm,
-        f"clear the read/write/error I/O statistics for disk '{disk_id}' "
-        "(the counters are reset and cannot be recovered)",
-    )
+    require_confirm(confirm, _clear_disk_statistics_consequence(disk_id))
     _require_disk_id(disk_id)
     return shape_mutation_result(
         await client.execute(queries.CLEAR_ARRAY_DISK_STATISTICS, {"id": disk_id})
@@ -149,11 +141,7 @@ async def do_clear_disk_statistics(
 async def do_add_disk_to_array(
     client: UnraidClient, disk_id: str, slot: int | None = None, confirm: bool = False
 ) -> dict[str, Any]:
-    require_confirm(
-        confirm,
-        f"add disk '{disk_id}' to the array "
-        "(the array must be stopped; assigning a slot can overwrite the disk)",
-    )
+    require_confirm(confirm, _add_disk_to_array_consequence(disk_id))
     _require_disk_id(disk_id)
     if slot is not None and slot < 0:
         raise ToolError(f"slot must be a non-negative integer, got {slot}.")
@@ -166,71 +154,84 @@ async def do_add_disk_to_array(
 async def do_remove_disk_from_array(
     client: UnraidClient, disk_id: str, confirm: bool
 ) -> dict[str, Any]:
-    require_confirm(
-        confirm,
-        f"remove disk '{disk_id}' from the array "
-        "(array must be stopped; data on it becomes inaccessible)",
-    )
+    require_confirm(confirm, _remove_disk_from_array_consequence(disk_id))
     _require_disk_id(disk_id)
     return shape_mutation_result(
         await client.execute(queries.REMOVE_DISK_FROM_ARRAY, {"input": {"id": disk_id}})
     )
 
 
+# Consequence strings are shared by the do_* gate and the elicitation resolvers
+# so the human is shown exactly what the confirm-only refusal names.
+
+
+def _stop_array_consequence() -> str:
+    return "stop the Unraid array (this unmounts all disks)"
+
+
+def _mount_array_disk_consequence(disk_id: str) -> str:
+    return f"mount disk '{disk_id}' in the array (brings the disk online)"
+
+
+def _unmount_array_disk_consequence(disk_id: str) -> str:
+    return (
+        f"unmount disk '{disk_id}' from the array (data on it becomes inaccessible until remounted)"
+    )
+
+
+def _clear_disk_statistics_consequence(disk_id: str) -> str:
+    return (
+        f"clear the read/write/error I/O statistics for disk '{disk_id}' "
+        "(the counters are reset and cannot be recovered)"
+    )
+
+
+def _add_disk_to_array_consequence(disk_id: str) -> str:
+    return (
+        f"add disk '{disk_id}' to the array "
+        "(the array must be stopped; assigning a slot can overwrite the disk)"
+    )
+
+
+def _remove_disk_from_array_consequence(disk_id: str) -> str:
+    return (
+        f"remove disk '{disk_id}' from the array "
+        "(array must be stopped; data on it becomes inaccessible)"
+    )
+
+
 def _confirm_stop_array(ctx: Context, confirm: bool) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(ctx, confirm, "stop the Unraid array (this unmounts all disks)")
+    return require_confirmation(ctx, confirm, _stop_array_consequence())
 
 
 def _confirm_mount_array_disk(
     ctx: Context, confirm: bool, disk_id: str
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(
-        ctx, confirm, f"mount disk '{disk_id}' in the array (brings the disk online)"
-    )
+    return require_confirmation(ctx, confirm, _mount_array_disk_consequence(disk_id))
 
 
 def _confirm_unmount_array_disk(
     ctx: Context, confirm: bool, disk_id: str
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(
-        ctx,
-        confirm,
-        f"unmount disk '{disk_id}' from the array "
-        "(data on it becomes inaccessible until remounted)",
-    )
+    return require_confirmation(ctx, confirm, _unmount_array_disk_consequence(disk_id))
 
 
 def _confirm_clear_disk_statistics(
     ctx: Context, confirm: bool, disk_id: str
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(
-        ctx,
-        confirm,
-        f"clear the read/write/error I/O statistics for disk '{disk_id}' "
-        "(the counters are reset and cannot be recovered)",
-    )
+    return require_confirmation(ctx, confirm, _clear_disk_statistics_consequence(disk_id))
 
 
 def _confirm_add_disk_to_array(
     ctx: Context, confirm: bool, disk_id: str
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(
-        ctx,
-        confirm,
-        f"add disk '{disk_id}' to the array "
-        "(the array must be stopped; assigning a slot can overwrite the disk)",
-    )
+    return require_confirmation(ctx, confirm, _add_disk_to_array_consequence(disk_id))
 
 
 def _confirm_remove_disk_from_array(
     ctx: Context, confirm: bool, disk_id: str
 ) -> Confirmation | Elicit[Confirmation]:
-    return require_confirmation(
-        ctx,
-        confirm,
-        f"remove disk '{disk_id}' from the array "
-        "(array must be stopped; data on it becomes inaccessible)",
-    )
+    return require_confirmation(ctx, confirm, _remove_disk_from_array_consequence(disk_id))
 
 
 def register(mcp: MCPServer, settings: Settings) -> None:
