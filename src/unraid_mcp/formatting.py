@@ -127,6 +127,7 @@ def shape_array_status(data: dict | None) -> dict[str, Any]:
 def shape_physical_disk(d: dict | None) -> dict[str, Any] | None:
     if not d:
         return None
+    partitions = d.get("partitions")
     return {
         "id": d.get("id"),
         "name": d.get("name"),
@@ -140,7 +141,14 @@ def shape_physical_disk(d: dict | None) -> dict[str, Any] | None:
         "spinning": d.get("isSpinning"),
         "size": _size_from_bytes(d.get("size")),
         "firmware": d.get("firmwareRevision"),
-        "partitions": d.get("partitions"),
+        "partitions": [
+            {**partition, "size": _size_from_bytes(partition.get("size"))}
+            if isinstance(partition, dict)
+            else partition
+            for partition in partitions
+        ]
+        if partitions is not None
+        else None,
     }
 
 

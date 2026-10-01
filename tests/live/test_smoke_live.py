@@ -121,6 +121,19 @@ def _check_shapes(obj: Any) -> None:
             _check_shapes(item)
 
 
+def _check_named_sizes(obj: Any) -> None:
+    """Ensure named size fields, including nested partition sizes, are shaped."""
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == "size" or key.endswith("_size") or key == "capacity":
+                assert isinstance(value, dict), (key, value)
+                assert set(value) == {"bytes", "human"}, (key, value)
+            _check_named_sizes(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            _check_named_sizes(item)
+
+
 async def _run(fetch: Callable[..., Awaitable[Any]], *args: Any) -> Any:
     """Call a read fetch, turning a capability-degradation error into a skip so
     tools unsupported by this API version don't fail the run.
@@ -205,6 +218,7 @@ async def test_get_disk_detail(live_client):
     if detail is not None:
         assert "size" in detail
         _check_shapes(detail)
+        _check_named_sizes(detail)
 
 
 async def test_get_container_detail(live_client):

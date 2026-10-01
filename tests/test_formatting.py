@@ -221,12 +221,24 @@ def test_shape_physical_disk_size_is_bytes():
         "temperature": 36.0,
         "isSpinning": True,
         "serialNum": "X",
+        "partitions": [
+            {"name": "sdb1", "fsType": "xfs", "size": 1_073_741_824},
+            {"name": "sdb2", "fsType": None, "size": None},
+        ],
     }
     out = shape_physical_disk(raw)
     assert out["smart_status"] == "OK"
     assert out["spinning"] is True
     assert out["size"]["bytes"] == 2_000_000_000_000
     assert out["size"]["human"].endswith("TiB")
+    assert out["partitions"] == [
+        {
+            "name": "sdb1",
+            "fsType": "xfs",
+            "size": {"bytes": 1_073_741_824, "human": "1.0 GiB"},
+        },
+        {"name": "sdb2", "fsType": None, "size": {"bytes": None, "human": None}},
+    ]
 
 
 @pytest.mark.parametrize(

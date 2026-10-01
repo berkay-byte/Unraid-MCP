@@ -43,6 +43,51 @@ async def test_list_and_call_through_protocol(settings_factory, mode):
             assert result.structured_content["os"]["hostname"] == "tower"
 
 
+async def test_get_disk_partitions_are_shaped_through_protocol(settings_factory):
+    with respx.mock:
+        route = respx.post(URL).mock(
+            side_effect=[
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "info": {"versions": {"core": {"api": "7.2.0", "unraid": "7.2.0"}}}
+                        }
+                    },
+                ),
+                httpx.Response(
+                    200,
+                    json={
+                        "data": {
+                            "disk": {
+                                "id": "1:a",
+                                "size": 1024,
+                                "partitions": [
+                                    {"name": "sda1", "fsType": "xfs", "size": 4096},
+                                    {"name": "sda2", "fsType": None, "size": None},
+                                ],
+                            }
+                        }
+                    },
+                ),
+            ]
+        )
+        mcp = build_server(settings_factory(allow_mutations=False))
+        async with Client(mcp, raise_exceptions=True) as session:
+            result = await session.call_tool("get_disk", {"disk_id": "1:a"})
+
+    assert result.is_error is False
+    assert result.structured_content["partitions"][0]["size"] == {
+        "bytes": 4096,
+        "human": "4.0 KiB",
+    }
+    assert result.structured_content["partitions"][1]["size"] == {
+        "bytes": None,
+        "human": None,
+    }
+    assert route.call_count == 2
+
+
 async def test_mutations_callable_when_enabled(settings_factory):
     with respx.mock:
         respx.post(URL).mock(

@@ -25,6 +25,20 @@ def _sent_vars(route):
     return json.loads(route.calls.last.request.content)["variables"]
 
 
+def _assert_size_fields_shaped(obj):
+    if isinstance(obj, dict):
+        for key, value in obj.items():
+            if key == "size" or key.endswith("_size") or key == "capacity":
+                assert isinstance(value, dict)
+                assert set(value) == {"bytes", "human"}
+                assert isinstance(value["bytes"], int) or value["bytes"] is None
+                assert isinstance(value["human"], str) or value["human"] is None
+            _assert_size_fields_shaped(value)
+    elif isinstance(obj, list):
+        for item in obj:
+            _assert_size_fields_shaped(item)
+
+
 async def test_system_info_with_flash(mocked_client):
     """The second (flash) call succeeds: info is enriched with flash identity."""
     info_resp = _resp({"info": {"os": {"hostname": "tower"}}})
@@ -214,12 +228,21 @@ async def test_disks_and_disk_details(mocked_client):
     async with mocked_client(_resp({"disks": [{"id": "1:a", "size": 1024**4}]})) as (c, r):
         disks = await array.fetch_disks(c)
     assert disks[0]["size"]["bytes"] == 1024**4
-    async with mocked_client(_resp({"disk": {"id": "1:a", "smartStatus": "OK", "size": 1024}})) as (
-        c,
-        r,
-    ):
+    disk = {
+        "id": "1:a",
+        "smartStatus": "OK",
+        "size": 1024,
+        "partitions": [
+            {"name": "sda1", "fsType": "xfs", "size": 4096},
+            {"name": "sda2", "fsType": None, "size": None},
+        ],
+    }
+    async with mocked_client(_resp({"disk": disk})) as (c, r):
         out = await array.fetch_disk(c, "1:a")
         assert out["smart_status"] == "OK"
+        assert out["partitions"][0]["size"] == {"bytes": 4096, "human": "4.0 KiB"}
+        assert out["partitions"][1]["size"] == {"bytes": None, "human": None}
+        _assert_size_fields_shaped(out)
         assert _sent_vars(r) == {"id": "1:a"}
 
 
