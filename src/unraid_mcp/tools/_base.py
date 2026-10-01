@@ -18,7 +18,8 @@ if TYPE_CHECKING:  # avoid a runtime import cycle (server imports tools imports 
 # Hints for MCP clients. Read tools touch an external system (open world) but
 # never change it; destructive mutations are flagged so hosts can warn/gate.
 # ``*_IDEMPOTENT`` marks tools where repeating the call has no further effect
-# (start/stop/pause/archive/delete-by-id), so clients may skip re-confirmation.
+# (start/stop/pause/archive/delete-by-id), i.e. it is safe to retry. Bulk ops whose
+# effect isn't bounded by their args stay non-idempotent.
 READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=True)
 MUTATING = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=True)
 MUTATING_IDEMPOTENT = ToolAnnotations(

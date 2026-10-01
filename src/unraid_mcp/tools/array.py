@@ -265,7 +265,7 @@ def register_dangerous(mcp: MCPServer, settings: Settings) -> None:
         confirm=true."""
         return await guarded(ctx, do_unmount_array_disk, disk_id, confirm)
 
-    @mcp.tool(title="Clear Disk Statistics", annotations=DESTRUCTIVE_IDEMPOTENT)
+    @mcp.tool(title="Clear Disk Statistics", annotations=DESTRUCTIVE)
     async def clear_disk_statistics(
         ctx: Context, disk_id: str, confirm: bool = False
     ) -> dict[str, Any]:

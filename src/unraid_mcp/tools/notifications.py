@@ -12,6 +12,7 @@ from ..client import UnraidClient
 from ..config import Settings
 from ..formatting import shape_mutation_result, shape_notifications, shape_notifications_overview
 from ._base import (
+    DESTRUCTIVE,
     DESTRUCTIVE_IDEMPOTENT,
     MUTATING,
     MUTATING_IDEMPOTENT,
@@ -176,7 +177,7 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
         """Archive (clear) a single unread notification by id. Requires confirm=true."""
         return await guarded(ctx, do_archive_notification, notification_id, confirm)
 
-    @mcp.tool(title="Archive All Notifications", annotations=DESTRUCTIVE_IDEMPOTENT)
+    @mcp.tool(title="Archive All Notifications", annotations=DESTRUCTIVE)
     async def archive_all_notifications(
         ctx: Context, importance: str | None = None, confirm: bool = False
     ) -> dict[str, Any]:
@@ -221,7 +222,7 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
         non-empty ids list and confirm=true."""
         return await guarded(ctx, do_unarchive_notifications, ids, confirm)
 
-    @mcp.tool(title="Unarchive All Notifications", annotations=MUTATING_IDEMPOTENT)
+    @mcp.tool(title="Unarchive All Notifications", annotations=MUTATING)
     async def unarchive_all_notifications(
         ctx: Context, importance: str | None = None, confirm: bool = False
     ) -> dict[str, Any]:
@@ -229,7 +230,7 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
         INFO/WARNING/ALERT). Bulk action — requires confirm=true."""
         return await guarded(ctx, do_unarchive_all, importance, confirm)
 
-    @mcp.tool(title="Delete Archived Notifications", annotations=DESTRUCTIVE_IDEMPOTENT)
+    @mcp.tool(title="Delete Archived Notifications", annotations=DESTRUCTIVE)
     async def delete_archived_notifications(ctx: Context, confirm: bool = False) -> dict[str, Any]:
         """Permanently delete ALL archived notifications. Irreversible bulk action —
         requires confirm=true."""
