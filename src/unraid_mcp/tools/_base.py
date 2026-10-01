@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
@@ -11,9 +13,15 @@ from mcp.types import ToolAnnotations
 
 from ..client import UnraidClient
 from ..errors import UnraidError, UnraidGraphQLError
+from ..logging import get_logger
 
 if TYPE_CHECKING:  # avoid a runtime import cycle (server imports tools imports _base)
     from ..server import AppContext
+
+log = get_logger(__name__)
+
+# ``(progress, total, message)`` — see :func:`progress_reporter`.
+ProgressCallback = Callable[[float, float | None, str | None], Awaitable[None]]
 
 # Hints for MCP clients. Read tools touch an external system (open world) but
 # never change it; destructive mutations are flagged so hosts can warn/gate.
@@ -131,3 +139,50 @@ def require_confirm(confirm: bool, action: str) -> None:
             f"Refusing to {action} without explicit confirmation. "
             "Re-call this tool with confirm=true if you really intend to."
         )
+
+
+def progress_reporter(ctx: Context) -> ProgressCallback:
+    """Build a progress callback bound to ``ctx`` for the plain ``fetch_*``/``do_*``
+    functions (they stay MCP-free). A no-op on the wire when the client sent no
+    progress token; any failure is swallowed (debug-logged) so progress reporting
+    can never break a tool."""
+
+    async def _report(progress: float, total: float | None = None, message: str | None = None):
+        try:
+            await ctx.report_progress(progress, total, message)
+        except Exception as exc:  # noqa: BLE001 - progress must never fail the tool
+            log.debug("progress report failed: %s", type(exc).__name__)
+
+    return _report
+
+
+async def with_heartbeat(
+    awaitable: Awaitable[Any],
+    progress: ProgressCallback | None,
+    *,
+    interval_s: float,
+    total: float | None = None,
+    message: str = "Still working",
+) -> Any:
+    """Await ``awaitable``; if ``progress`` is given, emit a heartbeat every
+    ``interval_s`` seconds (progress = elapsed seconds, monotonically increasing)
+    while it runs. The heartbeat task is always cancelled; callback errors are
+    swallowed."""
+    if progress is None:
+        return await awaitable
+
+    async def _beat() -> None:
+        elapsed = 0.0
+        while True:
+            await asyncio.sleep(interval_s)
+            elapsed += interval_s
+            with contextlib.suppress(Exception):
+                await progress(elapsed, total, f"{message} ({elapsed:.0f}s elapsed)")
+
+    task = asyncio.ensure_future(_beat())
+    try:
+        return await awaitable
+    finally:
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task

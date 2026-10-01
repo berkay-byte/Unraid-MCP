@@ -27,11 +27,14 @@ from ._base import (
     DESTRUCTIVE,
     MUTATING,
     READ_ONLY,
+    ProgressCallback,
     feature_unsupported,
     get_app_context,
     guarded,
+    progress_reporter,
     require_confirm,
     unsupported_field_error,
+    with_heartbeat,
 )
 
 MAX_LOG_TAIL = 1000
@@ -43,6 +46,10 @@ MAX_UPDATE_CONTAINERS = 20
 # event ≈1.6s and a full 32-container cycle ≈2.1s, so ~12s leaves generous slack
 # yet still guarantees the synchronous tool call returns (never hangs).
 STATS_TIMEOUT_S = 12.0
+
+# Batch updates are a single upstream mutation that can run for minutes; emit a
+# heartbeat progress notification this often while awaiting it.
+UPDATE_HEARTBEAT_S = 10.0
 
 
 async def fetch_containers(client: UnraidClient) -> list[dict[str, Any]]:
@@ -185,14 +192,21 @@ async def fetch_container_stats(
     connect: Any = None,
     timeout_s: float = STATS_TIMEOUT_S,
     api_version: str | None = None,
+    progress: ProgressCallback | None = None,
 ) -> dict[str, Any]:
     """Sample per-container CPU%/mem% via the ``dockerContainerStats`` subscription.
 
     Opens a fresh ``graphql-transport-ws`` websocket, accumulates one event per
     container until a full cycle is seen (or ``timeout_s`` elapses), and returns a
     snapshot envelope. Bounded — never hangs. ``connect`` is injectable for tests;
-    it defaults to the real :func:`subscriptions.open_ws`.
+    it defaults to the real :func:`subscriptions.open_ws`. ``progress`` (optional)
+    is awaited once per newly sampled container.
     """
+
+    async def _on_new(count: int) -> None:
+        if progress is not None:
+            await progress(count, None, f"Sampled {count} container(s)")
+
     open_conn = connect or subscriptions.open_ws
     api_key = settings.api_key.get_secret_value()
     try:
@@ -206,6 +220,7 @@ async def fetch_container_stats(
                 deadline_s=timeout_s,
                 key=_stats_key,
                 is_complete=_stats_complete,
+                on_new=_on_new,
             )
     except UnraidGraphQLError as exc:
         if unsupported_field_error(exc):
@@ -330,6 +345,8 @@ async def do_update_containers(
     confirm: bool = False,
     *,
     api_version: str | None = None,
+    progress: ProgressCallback | None = None,
+    heartbeat_s: float | None = None,
 ) -> list[dict[str, Any]]:
     """Pull the latest image for a batch of containers and recreate them."""
     require_confirm(
@@ -344,12 +361,23 @@ async def do_update_containers(
             f"Too many container ids: {len(container_ids)} exceeds the maximum of "
             f"{MAX_UPDATE_CONTAINERS} per call. Split the update into smaller batches."
         )
+    n = len(container_ids)
+    if progress is not None:
+        await progress(0, n, f"Updating {n} container(s)")
     try:
-        result = await client.execute(queries.UPDATE_CONTAINERS, {"ids": container_ids})
+        result = await with_heartbeat(
+            client.execute(queries.UPDATE_CONTAINERS, {"ids": container_ids}),
+            progress,
+            interval_s=UPDATE_HEARTBEAT_S if heartbeat_s is None else heartbeat_s,
+            total=n,
+            message=f"Updating {n} container(s)",
+        )
     except UnraidGraphQLError as exc:
         if unsupported_field_error(exc):
             raise feature_unsupported("Docker container updates", api_version=api_version) from None
         raise
+    if progress is not None:
+        await progress(n, n, f"Updated {n} container(s)")
     return shape_mutation_result_list(result)
 
 
@@ -361,16 +389,28 @@ async def do_update_all_containers(
     confirm: bool = False,
     *,
     api_version: str | None = None,
+    progress: ProgressCallback | None = None,
+    heartbeat_s: float | None = None,
 ) -> list[dict[str, Any]]:
     """Pull + recreate EVERY container that has an available image update."""
     require_confirm(confirm, "update (pull + recreate) EVERY container with an available update")
+    if progress is not None:
+        await progress(0, None, "Updating all containers with an available update")
     try:
-        result = await client.execute(queries.UPDATE_ALL_CONTAINERS)
+        result = await with_heartbeat(
+            client.execute(queries.UPDATE_ALL_CONTAINERS),
+            progress,
+            interval_s=UPDATE_HEARTBEAT_S if heartbeat_s is None else heartbeat_s,
+            message="Updating all containers",
+        )
     except UnraidGraphQLError as exc:
         if unsupported_field_error(exc):
             raise feature_unsupported("Docker container updates", api_version=api_version) from None
         raise
-    return shape_mutation_result_list(result)
+    shaped = shape_mutation_result_list(result)
+    if progress is not None:
+        await progress(len(shaped), len(shaped), f"Updated {len(shaped)} container(s)")
+    return shaped
 
 
 async def do_remove_container(
@@ -453,6 +493,7 @@ def register(mcp: MCPServer, settings: Settings) -> None:
             fetch_container_stats,
             settings=app.settings,
             api_version=app.api_version,
+            progress=progress_reporter(ctx),
         )
 
     @mcp.tool(annotations=READ_ONLY)
@@ -539,7 +580,12 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
         confirm=true."""
         api_version = get_app_context(ctx).api_version
         return await guarded(
-            ctx, do_update_containers, container_ids, confirm, api_version=api_version
+            ctx,
+            do_update_containers,
+            container_ids,
+            confirm,
+            api_version=api_version,
+            progress=progress_reporter(ctx),
         )
 
 
@@ -570,4 +616,10 @@ def register_dangerous(mcp: MCPServer, settings: Settings) -> None:
         here; use update_docker_container / update_docker_containers to update a
         specific target instead. Requires confirm=true."""
         api_version = get_app_context(ctx).api_version
-        return await guarded(ctx, do_update_all_containers, confirm, api_version=api_version)
+        return await guarded(
+            ctx,
+            do_update_all_containers,
+            confirm,
+            api_version=api_version,
+            progress=progress_reporter(ctx),
+        )

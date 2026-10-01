@@ -22,7 +22,7 @@ import contextlib
 import json
 import ssl
 import time
-from collections.abc import AsyncIterator, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
 from typing import Any, Protocol
 
@@ -74,6 +74,7 @@ async def sample_subscription(
     deadline_s: float,
     key: Callable[[dict[str, Any]], str | None],
     is_complete: Callable[[dict[str, dict[str, Any]], bool], bool],
+    on_new: Callable[[int], Awaitable[None]] | None = None,
 ) -> tuple[list[dict[str, Any]], bool]:
     """Drive one graphql-transport-ws sample and return ``(payloads, deadline_hit)``.
 
@@ -82,6 +83,8 @@ async def sample_subscription(
     insertion-ordered dict keyed by ``key(data)``; ``is_complete(collected, was_new)``
     decides when a full cycle has been captured. Returns the collected payloads and
     whether collection stopped because the deadline was hit (a partial result).
+    ``on_new(count)`` (optional) is awaited each time a new key is collected; it is
+    expected not to raise (a failure there is swallowed so it cannot break sampling).
 
     Raises (all secret-free):
 
@@ -164,6 +167,11 @@ async def sample_subscription(
                     # Keep the first reading per key; a later repeat (the next
                     # cycle starting) signals completeness but must not overwrite it.
                     collected[k] = data
+                    if on_new is not None:
+                        try:
+                            await on_new(len(collected))
+                        except Exception as exc:  # noqa: BLE001
+                            log.debug("on_new callback failed: %s", type(exc).__name__)
                 if is_complete(collected, was_new):
                     break
             elif mtype == "error":
