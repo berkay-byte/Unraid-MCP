@@ -25,6 +25,7 @@ from ..formatting import (
     shape_notifications_overview,
     shape_plugins,
     shape_ups,
+    shape_warnings_and_alerts,
     summarize_health,
 )
 from ._base import (
@@ -165,7 +166,10 @@ async def fetch_health(client: UnraidClient) -> dict[str, Any]:
     overview = await safe_query(
         client, queries.NOTIFICATIONS_OVERVIEW, shape_notifications_overview, {}
     )
-    return summarize_health(array, ups, overview)
+    top_alerts = await safe_query(
+        client, queries.WARNINGS_AND_ALERTS, shape_warnings_and_alerts, None
+    )
+    return summarize_health(array, ups, overview, top_alerts)
 
 
 async def do_raw_query(
@@ -208,7 +212,8 @@ def register(mcp: MCPServer, settings: Settings) -> None:
     @mcp.tool(annotations=READ_ONLY)
     async def get_health_summary(ctx: Context) -> dict[str, Any]:
         """Compact health roll-up for triage: array state, capacity, any unhealthy disks,
-        parity-check status, UPS state, and unread notification counts."""
+        parity-check status, UPS state, unread notification counts, and up to 5 top
+        unread warnings/alerts (`top_alerts`, when the API supports it)."""
         return await guarded(ctx, fetch_health)
 
     @mcp.tool(annotations=READ_ONLY)

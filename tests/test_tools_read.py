@@ -17,6 +17,9 @@ def _resp(data):
     return httpx.Response(200, json={"data": data})
 
 
+_NO_ALERTS = _resp({"notifications": {"warningsAndAlerts": []}})
+
+
 def _sent_query(route):
     return json.loads(route.calls.last.request.content)["query"]
 
@@ -716,7 +719,7 @@ async def test_health_summary_composes(mocked_client):
         {"upsDevices": [{"name": "ups0", "status": "Online", "battery": {"chargeLevel": 100}}]}
     )
     notif_resp = _resp({"notifications": {"overview": {"unread": {"alert": 1, "warning": 0}}}})
-    async with mocked_client([array_resp, ups_resp, notif_resp]) as (c, r):
+    async with mocked_client([array_resp, ups_resp, notif_resp, _NO_ALERTS]) as (c, r):
         out = await misc.fetch_health(c)
     assert out["overall"] == "attention"  # a failed disk + an alert
     assert out["array_state"] == "STARTED"
@@ -728,7 +731,7 @@ async def test_health_summary_degrades_when_ups_unavailable(mocked_client):
     array_resp = _resp({"array": {"state": "STARTED", "disks": []}})
     ups_err = httpx.Response(200, json={"errors": [{"message": "no ups"}], "data": None})
     notif_resp = _resp({"notifications": {"overview": {"unread": {"alert": 0, "warning": 0}}}})
-    async with mocked_client([array_resp, ups_err, notif_resp]) as (c, r):
+    async with mocked_client([array_resp, ups_err, notif_resp, _NO_ALERTS]) as (c, r):
         out = await misc.fetch_health(c)
     assert out["overall"] == "ok"
     assert out["ups"] == []
@@ -749,7 +752,7 @@ async def test_health_summary_ignores_empty_array_slots(mocked_client):
     )
     ups_resp = _resp({"upsDevices": []})
     notif_resp = _resp({"notifications": {"overview": {"unread": {"alert": 0, "warning": 0}}}})
-    async with mocked_client([array_resp, ups_resp, notif_resp]) as (c, r):
+    async with mocked_client([array_resp, ups_resp, notif_resp, _NO_ALERTS]) as (c, r):
         out = await misc.fetch_health(c)
     assert out["overall"] == "ok"
     assert out["unhealthy_disks"] == []
@@ -771,7 +774,7 @@ async def test_health_summary_flags_missing_assigned_disk(mocked_client):
     )
     ups_resp = _resp({"upsDevices": []})
     notif_resp = _resp({"notifications": {"overview": {"unread": {"alert": 0, "warning": 0}}}})
-    async with mocked_client([array_resp, ups_resp, notif_resp]) as (c, r):
+    async with mocked_client([array_resp, ups_resp, notif_resp, _NO_ALERTS]) as (c, r):
         out = await misc.fetch_health(c)
     assert out["overall"] == "attention"
     assert out["unhealthy_disks"][0]["health"] == "missing"
@@ -879,3 +882,105 @@ async def test_read_log_file_unsupported_api(mocked_client):
     async with mocked_client(resp) as (c, r):
         with pytest.raises(ToolError, match="does not support"):
             await misc.fetch_log_file(c, "/var/log/syslog", api_version="7.1.0")
+
+
+_ALERT_ITEM = {
+    "id": "n1",
+    "title": "Disk 2 SMART",
+    "subject": "s",
+    "description": "d",
+    "importance": "ALERT",
+    "link": None,
+    "type": "UNREAD",
+    "timestamp": "2026-07-01T00:00:00Z",
+    "formattedTimestamp": "x",
+}
+
+
+async def test_warnings_and_alerts_happy(mocked_client):
+    resp = _resp({"notifications": {"warningsAndAlerts": [_ALERT_ITEM]}})
+    async with mocked_client(resp) as (c, r):
+        out = await notifications.fetch_warnings_and_alerts(c)
+    assert out == [_ALERT_ITEM]
+    assert _sent_query(r) == queries.WARNINGS_AND_ALERTS
+
+
+@pytest.mark.parametrize(
+    "data",
+    [
+        {"notifications": {"warningsAndAlerts": []}},
+        {"notifications": {"warningsAndAlerts": None}},
+        {"notifications": None},
+        None,
+    ],
+)
+async def test_warnings_and_alerts_empty_or_null(mocked_client, data):
+    async with mocked_client(_resp(data)) as (c, r):
+        assert await notifications.fetch_warnings_and_alerts(c) == []
+
+
+async def test_warnings_and_alerts_unsupported_raises_friendly_error(mocked_client):
+    resp = httpx.Response(
+        200,
+        json={
+            "errors": [
+                {"message": 'Cannot query field "warningsAndAlerts" on type "Notifications".'}
+            ],
+            "data": None,
+        },
+    )
+    async with mocked_client(resp) as (c, r):
+        with pytest.raises(ToolError, match="does not support"):
+            await notifications.fetch_warnings_and_alerts(c, api_version="7.0.0")
+
+
+async def test_warnings_and_alerts_other_error_propagates(mocked_client):
+    resp = httpx.Response(200, json={"errors": [{"message": "boom"}], "data": None})
+    async with mocked_client(resp) as (c, r):
+        with pytest.raises(UnraidGraphQLError):
+            await notifications.fetch_warnings_and_alerts(c)
+
+
+async def test_health_summary_top_alerts_capped_at_five(mocked_client):
+    items = [{**_ALERT_ITEM, "id": f"n{i}", "title": f"t{i}"} for i in range(7)]
+    responses = [
+        _resp({"array": {"state": "STARTED", "disks": []}}),
+        _resp({"upsDevices": []}),
+        _resp({"notifications": {"overview": {"unread": {"alert": 7, "warning": 0}}}}),
+        _resp({"notifications": {"warningsAndAlerts": items}}),
+    ]
+    async with mocked_client(responses) as (c, r):
+        out = await misc.fetch_health(c)
+    assert len(out["top_alerts"]) == 5
+    assert out["top_alerts"][0] == {"title": "t0", "importance": "ALERT"}
+
+
+async def test_health_summary_top_alerts_empty(mocked_client):
+    responses = [
+        _resp({"array": {"state": "STARTED", "disks": []}}),
+        _resp({"upsDevices": []}),
+        _resp({"notifications": {"overview": {"unread": {}}}}),
+        _NO_ALERTS,
+    ]
+    async with mocked_client(responses) as (c, r):
+        out = await misc.fetch_health(c)
+    assert out["top_alerts"] == []
+
+
+async def test_health_summary_omits_top_alerts_when_unsupported(mocked_client):
+    unsupported = httpx.Response(
+        200,
+        json={
+            "errors": [{"message": 'Cannot query field "warningsAndAlerts" on type "X".'}],
+            "data": None,
+        },
+    )
+    responses = [
+        _resp({"array": {"state": "STARTED", "disks": []}}),
+        _resp({"upsDevices": []}),
+        _resp({"notifications": {"overview": {"unread": {}}}}),
+        unsupported,
+    ]
+    async with mocked_client(responses) as (c, r):
+        out = await misc.fetch_health(c)
+    assert "top_alerts" not in out

@@ -427,6 +427,11 @@ def shape_notifications(data: dict | None) -> list[dict[str, Any]]:
     return notifications.get("list") or []
 
 
+def shape_warnings_and_alerts(data: dict | None) -> list[dict[str, Any]]:
+    notifications = (data or {}).get("notifications") or {}
+    return notifications.get("warningsAndAlerts") or []
+
+
 def shape_notifications_overview(data: dict | None) -> dict[str, Any]:
     notifications = (data or {}).get("notifications") or {}
     return notifications.get("overview") or {}
@@ -559,12 +564,20 @@ def shape_mutation_result_list(data: dict | None) -> list[dict[str, Any]]:
     return list(payload) if isinstance(payload, list) else []
 
 
+_TOP_ALERTS_MAX = 5
+
+
 def summarize_health(
     array_out: dict[str, Any],
     ups_list: list[dict[str, Any]],
     notifications_overview: dict[str, Any],
+    top_alerts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
-    """Compose a compact, triage-friendly health roll-up from the shaped parts."""
+    """Compose a compact, triage-friendly health roll-up from the shaped parts.
+
+    ``top_alerts`` is the shaped ``warningsAndAlerts`` list, or None when the API
+    build lacks that query (the key is then omitted from the result).
+    """
     disks = [
         d
         for d in (
@@ -579,7 +592,7 @@ def summarize_health(
     unhealthy = [d for d in disks if d and d.get("health") not in ("healthy", None)]
     unread = (notifications_overview or {}).get("unread") or {}
     has_attention = bool(unhealthy or unread.get("alert") or unread.get("warning"))
-    return {
+    result = {
         "overall": "attention" if has_attention else "ok",
         "array_state": array_out.get("state"),
         "capacity": array_out.get("capacity"),
@@ -599,3 +612,9 @@ def summarize_health(
         ],
         "notifications_unread": unread,
     }
+    if top_alerts is not None:
+        result["top_alerts"] = [
+            {"title": a.get("title"), "importance": a.get("importance")}
+            for a in top_alerts[:_TOP_ALERTS_MAX]
+        ]
+    return result

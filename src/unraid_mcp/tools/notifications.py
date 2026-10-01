@@ -10,8 +10,23 @@ from mcp.server.mcpserver.exceptions import ToolError
 from .. import queries
 from ..client import UnraidClient
 from ..config import Settings
-from ..formatting import shape_mutation_result, shape_notifications, shape_notifications_overview
-from ._base import DESTRUCTIVE, MUTATING, READ_ONLY, guarded, require_confirm
+from ..errors import UnraidGraphQLError
+from ..formatting import (
+    shape_mutation_result,
+    shape_notifications,
+    shape_notifications_overview,
+    shape_warnings_and_alerts,
+)
+from ._base import (
+    DESTRUCTIVE,
+    MUTATING,
+    READ_ONLY,
+    feature_unsupported,
+    get_app_context,
+    guarded,
+    require_confirm,
+    unsupported_field_error,
+)
 
 _VALID_IMPORTANCE = {"INFO", "WARNING", "ALERT"}
 
@@ -39,6 +54,17 @@ async def fetch_notifications(
     if importance:
         filt["importance"] = importance
     return shape_notifications(await client.execute(queries.LIST_NOTIFICATIONS, {"filter": filt}))
+
+
+async def fetch_warnings_and_alerts(
+    client: UnraidClient, *, api_version: str | None = None
+) -> list[dict[str, Any]]:
+    try:
+        return shape_warnings_and_alerts(await client.execute(queries.WARNINGS_AND_ALERTS))
+    except UnraidGraphQLError as exc:
+        if unsupported_field_error(exc):
+            raise feature_unsupported("warnings and alerts", api_version=api_version) from None
+        raise
 
 
 async def do_archive_notification(
@@ -159,6 +185,13 @@ def register(mcp: MCPServer, settings: Settings) -> None:
         """List notifications. notification_type is UNREAD or ARCHIVE; importance optionally
         filters to INFO/WARNING/ALERT. Supports limit/offset paging."""
         return await guarded(ctx, fetch_notifications, notification_type, importance, limit, offset)
+
+    @mcp.tool(annotations=READ_ONLY)
+    async def list_warnings_and_alerts(ctx: Context) -> list[dict[str, Any]]:
+        """List current unread WARNING/ALERT notifications (deduplicated, latest first) —
+        the cheapest "is anything wrong?" check. Same item shape as list_notifications."""
+        api_version = get_app_context(ctx).api_version
+        return await guarded(ctx, fetch_warnings_and_alerts, api_version=api_version)
 
 
 def register_mutations(mcp: MCPServer, settings: Settings) -> None:
