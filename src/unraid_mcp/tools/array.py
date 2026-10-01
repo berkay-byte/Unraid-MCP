@@ -189,12 +189,14 @@ def register(mcp: MCPServer, settings: Settings) -> None:
 
     @mcp.tool(annotations=READ_ONLY)
     async def list_disks(ctx: Context) -> list[Disk | None]:
-        """List physical disks. Use a disk id with get_disk for full details."""
+        """List physical disks (id, name, device, type, SMART status, temp_c, spinning, size).
+        Use a disk id with get_disk for full details."""
         return await guarded(ctx, fetch_disks)
 
     @mcp.tool(annotations=READ_ONLY)
     async def get_disk(ctx: Context, disk_id: str) -> Disk:
-        """Get a physical disk by its id from list_disks. Errors if the id is unknown."""
+        """Get a physical disk by its id from list_disks (adds firmware and partitions).
+        Errors if the id is unknown."""
         return await guarded(ctx, fetch_disk, disk_id)
 
 

@@ -2,7 +2,7 @@
 
 from typing import Annotated, Literal, NotRequired
 
-from pydantic import Field
+from pydantic import ConfigDict, Field
 from typing_extensions import TypedDict
 
 
@@ -34,6 +34,8 @@ class Container(TypedDict):
 
 
 class DiskPartition(TypedDict):
+    __pydantic_config__ = ConfigDict(extra="forbid")
+
     name: str | None
     fsType: str | None
     size: Annotated[int | float | None, Field(description="Raw partition size in bytes.")]
@@ -87,6 +89,8 @@ class UnhealthyDisk(TypedDict):
 
 
 class ParityCheck(TypedDict):
+    __pydantic_config__ = ConfigDict(extra="forbid")
+
     progress: NotRequired[int | None]
     speed: NotRequired[str | None]
     errors: NotRequired[int | None]
@@ -103,6 +107,8 @@ class HealthUPS(TypedDict):
 
 
 class NotificationCounts(TypedDict):
+    __pydantic_config__ = ConfigDict(extra="forbid")
+
     info: NotRequired[int | None]
     warning: NotRequired[int | None]
     alert: NotRequired[int | None]

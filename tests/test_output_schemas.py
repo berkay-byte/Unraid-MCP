@@ -253,3 +253,37 @@ async def test_health_partial_fields_validate_through_sdk(settings_factory):
             assert result.is_error is False
             assert result.structured_content["parity_check"] == {"running": None}
             assert result.structured_content["notifications_unread"] == {"alert": None}
+
+
+@pytest.mark.parametrize(
+    "td,extra",
+    [
+        ("ParityCheck", {"progress": 1, "newField": 2}),
+        ("NotificationCounts", {"info": 1, "newField": 2}),
+        ("DiskPartition", {"name": "a", "fsType": "x", "size": 1, "newField": 2}),
+    ],
+)
+def test_passthrough_typeddicts_reject_unexpected_keys(td, extra):
+    from pydantic import TypeAdapter, ValidationError
+
+    from unraid_mcp import types
+
+    with pytest.raises(ValidationError):
+        TypeAdapter(getattr(types, td)).validate_python(extra)
+
+
+@pytest.mark.parametrize(
+    "td,query,block",
+    [
+        ("ParityCheck", "ARRAY_STATUS", r"parityCheckStatus \{([^}]*)\}"),
+        ("NotificationCounts", "NOTIFICATIONS_OVERVIEW", r"unread \{([^}]*)\}"),
+        ("DiskPartition", "DISK_DETAILS", r"partitions \{([^}]*)\}"),
+    ],
+)
+def test_passthrough_typeddict_keys_match_query_selection(td, query, block):
+    import re
+
+    from unraid_mcp import queries, types
+
+    selected = set(re.search(block, getattr(queries, query)).group(1).split())
+    assert selected == set(getattr(types, td).__annotations__)

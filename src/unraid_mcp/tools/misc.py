@@ -208,7 +208,8 @@ def register(mcp: MCPServer, settings: Settings) -> None:
 
     @mcp.tool(annotations=READ_ONLY)
     async def get_health_summary(ctx: Context) -> HealthSummary:
-        """Get a compact health summary for triage."""
+        """Get a compact health summary for triage: overall, array_state, capacity, unhealthy_disks,
+        parity_check, ups, notifications_unread."""
         return await guarded(ctx, fetch_health)
 
     @mcp.tool(annotations=READ_ONLY)
