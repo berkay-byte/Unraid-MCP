@@ -863,7 +863,7 @@ async def test_read_log_file_happy_path(mocked_client):
 
 
 async def test_read_log_file_omits_start_line_when_none(mocked_client):
-    data = {"logFile": {"path": "/var/log/syslog", "content": "x", "totalLines": 1, "startLine": 0}}
+    data = {"logFile": {"path": "/var/log/syslog", "content": "x", "totalLines": 1, "startLine": 1}}
     async with mocked_client(_resp(data)) as (c, r):
         await misc.fetch_log_file(c, "/var/log/syslog")
     assert _sent_vars(r) == {"path": "/var/log/syslog", "lines": 100}
@@ -881,6 +881,48 @@ async def test_read_log_file_rejects_path_outside_var_log_no_http(mocked_client)
         with pytest.raises(ToolError, match="list_log_files"):
             await misc.fetch_log_file(c, "/etc/shadow")
     assert r.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/var/log/../../etc/passwd",
+        "/var/log/../etc/passwd",
+        "/var/logevil/x",
+        "var/log/syslog",
+        "syslog",
+        "/var/log/sys\x00log",
+        "/var/log/a/../../../etc/shadow",
+    ],
+)
+async def test_read_log_file_rejects_bad_paths_no_http(mocked_client, path):
+    async with mocked_client(_resp({})) as (c, r):
+        with pytest.raises(ToolError, match="list_log_files"):
+            await misc.fetch_log_file(c, path)
+    assert r.call_count == 0
+
+
+@pytest.mark.parametrize("lines", [0, -1])
+async def test_read_log_file_rejects_nonpositive_lines_no_http(mocked_client, lines):
+    async with mocked_client(_resp({})) as (c, r):
+        with pytest.raises(ToolError, match="lines"):
+            await misc.fetch_log_file(c, "/var/log/syslog", lines=lines)
+    assert r.call_count == 0
+
+
+@pytest.mark.parametrize("start_line", [0, -1])
+async def test_read_log_file_rejects_start_line_below_one_no_http(mocked_client, start_line):
+    async with mocked_client(_resp({})) as (c, r):
+        with pytest.raises(ToolError, match="start_line"):
+            await misc.fetch_log_file(c, "/var/log/syslog", start_line=start_line)
+    assert r.call_count == 0
+
+
+async def test_read_log_file_accepts_var_log_root_and_nested(mocked_client):
+    data = {"logFile": {"path": "/var/log/a/b", "content": "x", "totalLines": 1, "startLine": 1}}
+    async with mocked_client(_resp(data)) as (c, r):
+        await misc.fetch_log_file(c, "/var/log/a/b", start_line=1)
+    assert r.call_count == 1
 
 
 async def test_read_log_file_rejects_empty_path_no_http(mocked_client):
