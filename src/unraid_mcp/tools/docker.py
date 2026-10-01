@@ -23,6 +23,7 @@ from ..formatting import (
     shape_mutation_result,
     shape_mutation_result_list,
 )
+from ..types import Container
 from ._base import (
     DESTRUCTIVE,
     MUTATING,
@@ -45,7 +46,7 @@ MAX_UPDATE_CONTAINERS = 20
 STATS_TIMEOUT_S = 12.0
 
 
-async def fetch_containers(client: UnraidClient) -> list[dict[str, Any]]:
+async def fetch_containers(client: UnraidClient) -> list[Container | None]:
     return shape_containers(await client.execute(queries.LIST_CONTAINERS))
 
 
@@ -61,7 +62,7 @@ def _looks_like_id(identifier: str) -> bool:
     return ":" in identifier
 
 
-async def fetch_container_native(client: UnraidClient, container_id: str) -> dict[str, Any] | None:
+async def fetch_container_native(client: UnraidClient, container_id: str) -> Container | None:
     """Try the native ``docker.container(id)`` query.
 
     Returns the shaped container dict, or ``None`` if the API doesn't have
@@ -81,7 +82,7 @@ async def fetch_container_native(client: UnraidClient, container_id: str) -> dic
     return shape_container(container)
 
 
-async def fetch_container(client: UnraidClient, identifier: str) -> dict[str, Any]:
+async def fetch_container(client: UnraidClient, identifier: str) -> Container:
     if _looks_like_id(identifier):
         native = await fetch_container_native(client, identifier)
         if native is not None:
@@ -397,12 +398,12 @@ async def do_remove_container(
 
 def register(mcp: MCPServer, settings: Settings) -> None:
     @mcp.tool(annotations=READ_ONLY)
-    async def list_docker_containers(ctx: Context) -> list[dict[str, Any]]:
+    async def list_docker_containers(ctx: Context) -> list[Container | None]:
         """List Docker containers with id, name, image, state, status, autostart and ports."""
         return await guarded(ctx, fetch_containers)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def get_docker_container(ctx: Context, identifier: str) -> dict[str, Any]:
+    async def get_docker_container(ctx: Context, identifier: str) -> Container:
         """Get one Docker container by id or name."""
         return await guarded(ctx, fetch_container, identifier)
 

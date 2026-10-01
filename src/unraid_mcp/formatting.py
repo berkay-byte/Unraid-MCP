@@ -15,6 +15,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from .types import ArrayDisk, Container, Disk, HealthSummary, Size
+
 _FAILED_STATUSES = {"DISK_DSBL", "DISK_INVALID", "DISK_WRONG", "DISK_DSBL_NEW", "DISK_NP_DSBL"}
 # DISK_NP means "no device present" - an empty/unassigned array slot, which is a
 # normal, healthy state when the array has spare slots. DISK_NP_MISSING means a
@@ -48,12 +50,12 @@ def kib_to_bytes(value: Any) -> int | None:
         return None
 
 
-def _size_from_kib(value: Any) -> dict[str, Any]:
+def _size_from_kib(value: Any) -> Size:
     b = kib_to_bytes(value)
     return {"bytes": b, "human": human_size(b)}
 
 
-def _size_from_bytes(value: Any) -> dict[str, Any]:
+def _size_from_bytes(value: Any) -> Size:
     try:
         b = int(value) if value is not None and value != "" else None
     except (TypeError, ValueError):
@@ -82,7 +84,7 @@ def array_disk_health(status: str | None, warning: Any = 0, critical: Any = 0) -
     return "unknown"
 
 
-def _shape_array_disk(d: dict | None) -> dict[str, Any] | None:
+def _shape_array_disk(d: dict | None) -> ArrayDisk | None:
     if not d:
         return None
     return {
@@ -123,7 +125,7 @@ def shape_array_status(data: dict | None) -> dict[str, Any]:
     }
 
 
-def shape_physical_disk(d: dict | None) -> dict[str, Any] | None:
+def shape_physical_disk(d: dict | None) -> Disk | None:
     if not d:
         return None
     return {
@@ -143,7 +145,7 @@ def shape_physical_disk(d: dict | None) -> dict[str, Any] | None:
     }
 
 
-def shape_physical_disks(data: dict | None) -> list[dict[str, Any]]:
+def shape_physical_disks(data: dict | None) -> list[Disk | None]:
     return [shape_physical_disk(d) for d in ((data or {}).get("disks") or [])]
 
 
@@ -228,7 +230,7 @@ def shape_services(data: dict | None) -> list[dict[str, Any]]:
     return out
 
 
-def shape_container(c: dict | None) -> dict[str, Any] | None:
+def shape_container(c: dict | None) -> Container | None:
     if not c:
         return None
     names = c.get("names") or []
@@ -252,7 +254,7 @@ def shape_container(c: dict | None) -> dict[str, Any] | None:
     }
 
 
-def shape_containers(data: dict | None) -> list[dict[str, Any]]:
+def shape_containers(data: dict | None) -> list[Container | None]:
     docker = (data or {}).get("docker") or {}
     return [shape_container(c) for c in (docker.get("containers") or [])]
 
@@ -563,7 +565,7 @@ def summarize_health(
     array_out: dict[str, Any],
     ups_list: list[dict[str, Any]],
     notifications_overview: dict[str, Any],
-) -> dict[str, Any]:
+) -> HealthSummary:
     """Compose a compact, triage-friendly health roll-up from the shaped parts."""
     disks = [
         d

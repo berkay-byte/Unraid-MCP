@@ -27,6 +27,7 @@ from ..formatting import (
     shape_ups,
     summarize_health,
 )
+from ..types import HealthSummary
 from ._base import (
     READ_ONLY,
     feature_unsupported,
@@ -159,7 +160,7 @@ async def fetch_plugins(
     return plugins + installed
 
 
-async def fetch_health(client: UnraidClient) -> dict[str, Any]:
+async def fetch_health(client: UnraidClient) -> HealthSummary:
     array = shape_array_status(await client.execute(queries.ARRAY_STATUS))
     ups = await safe_query(client, queries.UPS_DEVICES, shape_ups, [])
     overview = await safe_query(
@@ -206,9 +207,8 @@ def register(mcp: MCPServer, settings: Settings) -> None:
         return await guarded(ctx, fetch_plugins, api_version=api_version)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def get_health_summary(ctx: Context) -> dict[str, Any]:
-        """Compact health roll-up for triage: array state, capacity, any unhealthy disks,
-        parity-check status, UPS state, and unread notification counts."""
+    async def get_health_summary(ctx: Context) -> HealthSummary:
+        """Get a compact health summary for triage."""
         return await guarded(ctx, fetch_health)
 
     @mcp.tool(annotations=READ_ONLY)
