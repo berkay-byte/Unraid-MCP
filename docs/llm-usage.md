@@ -102,9 +102,8 @@ A typical stdio client config:
 | `pause_docker_container` / `unpause_docker_container` | `container_id`, `confirm` | Freeze/resume a container's processes without stopping it. No fallback on older API builds — errors clearly if unsupported. |
 | `update_docker_container` | `container_id`, `confirm` | Pull latest image and **recreate** the container (brief downtime). id from `list_docker_containers` / `check_docker_updates`. |
 | `update_docker_containers` | `container_ids`, `confirm` | Batch update: pull + recreate each. List must be non-empty and ≤ 20 ids per call. |
-| `refresh_docker_digests` | `confirm` | Force a fresh image-digest check (idempotent); call before `check_docker_updates`. |
-| `set_docker_autostart` | `entries`, `persist_user_preferences`, `confirm` | `entries`: non-empty list of `{id, auto_start, wait?}`; validated locally. Changes what starts at boot. |
-| `start_flash_backup` | `remote_name`, `source_path`, `destination_path`, `options?`, `confirm` | Flash backup to a configured rclone remote (typical source `/boot`). Returns `{status, job_id}`; async. |
+| `refresh_docker_digests` | `confirm` | Force a fresh image-digest check (idempotent); call before `check_docker_updates`. Upstream gates it behind the `ENABLE_NEXT_DOCKER_RELEASE` feature flag; errors clearly if off. |
+| `set_docker_autostart` | `entries`, `persist_user_preferences`, `confirm` | `entries`: non-empty list of `{id, auto_start, wait?}`; validated locally. Upstream replaces the whole autostart list, so the tool reads the current list, merges your changes (order kept, new enables appended) and sends the full list; unknown ids rejected. |
 | `start_vm` / `pause_vm` / `resume_vm` | `vm_id`, `confirm` | id from `list_vms`. |
 | `stop_vm` | `vm_id`, `confirm` | Graceful shutdown. |
 | `reboot_vm` | `vm_id`, `confirm` | Reboot. |

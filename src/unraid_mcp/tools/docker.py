@@ -363,7 +363,9 @@ async def do_refresh_docker_digests(
     except UnraidGraphQLError as exc:
         if unsupported_field_error(exc):
             raise feature_unsupported(
-                "refreshing Docker digests", api_version=api_version
+                "refreshing Docker digests (upstream gates it behind the "
+                "ENABLE_NEXT_DOCKER_RELEASE feature flag)",
+                api_version=api_version,
             ) from None
         raise
     if (result or {}).get("refreshDockerDigests") is not True:
@@ -373,14 +375,18 @@ async def do_refresh_docker_digests(
     return {"ok": True}
 
 
+MAX_AUTOSTART_WAIT = 2147483647  # GraphQL Int max
+
+
 def _validate_autostart_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """Validate and normalise autostart entries into ``DockerAutostartEntryInput``."""
+    """Validate and normalise requested changes ({id, auto_start, wait?})."""
     if not isinstance(entries, list) or not entries:
         raise ToolError(
             "entries must be a non-empty list of {id, auto_start, wait?} objects "
             "(ids from list_docker_containers)."
         )
     out: list[dict[str, Any]] = []
+    seen: set[str] = set()
     for i, entry in enumerate(entries):
         if not isinstance(entry, dict):
             raise ToolError(f"entries[{i}] must be an object {{id, auto_start, wait?}}.")
@@ -390,17 +396,65 @@ def _validate_autostart_entries(entries: list[dict[str, Any]]) -> list[dict[str,
         cid = entry.get("id")
         if not isinstance(cid, str) or not cid.strip():
             raise ToolError(f"entries[{i}].id must be a non-empty container id.")
+        if cid in seen:
+            raise ToolError(f"entries[{i}].id {cid!r} is listed more than once.")
+        seen.add(cid)
         auto = entry["auto_start"] if "auto_start" in entry else entry.get("autoStart")
         if not isinstance(auto, bool):
             raise ToolError(f"entries[{i}].auto_start must be a boolean.")
         item: dict[str, Any] = {"id": cid, "autoStart": auto}
         wait = entry.get("wait")
         if wait is not None:
-            if isinstance(wait, bool) or not isinstance(wait, int) or wait < 0:
-                raise ToolError(f"entries[{i}].wait must be a non-negative integer (seconds).")
+            if (
+                isinstance(wait, bool)
+                or not isinstance(wait, int)
+                or not 0 <= wait <= MAX_AUTOSTART_WAIT
+            ):
+                raise ToolError(
+                    f"entries[{i}].wait must be an integer 0..{MAX_AUTOSTART_WAIT} (seconds)."
+                )
             item["wait"] = wait
         out.append(item)
     return out
+
+
+def _merge_autostart(
+    containers: list[dict[str, Any]], changes: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """Merge ``changes`` into the current autostart list, preserving boot order.
+
+    Upstream REPLACES the whole autostart file, so we send the full list: current
+    autostart containers in their existing order, requested disables removed,
+    requested enables updated in place or appended.
+    """
+    known = {c["id"] for c in containers if c.get("id")}
+    missing = [c["id"] for c in changes if c["id"] not in known]
+    if missing:
+        raise ToolError(
+            f"Unknown container id(s): {missing}. Use ids from list_docker_containers; "
+            "nothing was changed."
+        )
+    enabled = sorted(
+        (c for c in containers if c.get("autoStart")),
+        key=lambda c: (c.get("autoStartOrder") is None, c.get("autoStartOrder") or 0),
+    )
+    current: list[dict[str, Any]] = []
+    for c in enabled:
+        entry: dict[str, Any] = {"id": c["id"], "autoStart": True}
+        if c.get("autoStartWait") is not None:
+            entry["wait"] = c["autoStartWait"]
+        current.append(entry)
+    for change in changes:
+        idx = next((i for i, e in enumerate(current) if e["id"] == change["id"]), None)
+        if not change["autoStart"]:
+            if idx is not None:
+                current.pop(idx)
+        elif idx is not None:
+            if "wait" in change:
+                current[idx]["wait"] = change["wait"]
+        else:
+            current.append(dict(change))
+    return current
 
 
 async def do_set_docker_autostart(
@@ -411,17 +465,26 @@ async def do_set_docker_autostart(
     *,
     api_version: str | None = None,
 ) -> dict[str, Any]:
-    """Set autostart flag/wait for a batch of containers."""
+    """Change autostart for some containers via read-modify-write.
+
+    The upstream mutation replaces the ENTIRE autostart list (unlisted containers
+    lose autostart; list order is boot order), so the current list is fetched,
+    the changes merged in, and the full list sent.
+    """
+    ids = [e.get("id") for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
     require_confirm(
         confirm,
-        f"change Docker autostart configuration for {len(entries or [])} container(s) "
-        "(affects which containers start at boot)",
+        f"update autostart for {ids} (merged into the existing autostart list, which is "
+        "then rewritten in full; boot order and, if persist_user_preferences, UI order change)",
     )
-    payload = _validate_autostart_entries(entries)
+    changes = _validate_autostart_entries(entries)
     try:
+        state = await client.execute(queries.DOCKER_AUTOSTART_STATE)
+        containers = ((state or {}).get("docker") or {}).get("containers") or []
+        full = _merge_autostart(containers, changes)
         result = await client.execute(
             queries.UPDATE_DOCKER_AUTOSTART,
-            {"entries": payload, "persist": persist_user_preferences},
+            {"entries": full, "persist": persist_user_preferences},
         )
     except UnraidGraphQLError as exc:
         if unsupported_field_error(exc):
@@ -431,7 +494,7 @@ async def do_set_docker_autostart(
         raise
     if ((result or {}).get("docker") or {}).get("updateAutostartConfiguration") is not True:
         raise ToolError("The Unraid API did not confirm the autostart update (no true result).")
-    return {"ok": True, "updated": len(payload)}
+    return {"ok": True, "autostart": full}
 
 
 # ── Dangerous-tier logic ────────────────────────────────────────────────────
@@ -627,7 +690,8 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
     async def refresh_docker_digests(ctx: Context, confirm: bool = False) -> dict[str, Any]:
         """Force a fresh Docker image digest check against registries, so a following
         check_docker_updates reflects current availability. Idempotent; changes no
-        container. Requires confirm=true."""
+        container. Upstream gates it behind the ENABLE_NEXT_DOCKER_RELEASE flag.
+        Requires confirm=true."""
         api_version = get_app_context(ctx).api_version
         return await guarded(ctx, do_refresh_docker_digests, confirm, api_version=api_version)
 
@@ -641,8 +705,11 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
         """Set Docker container autostart config. entries: non-empty list of
         {"id": <container id from list_docker_containers>, "auto_start": bool,
         "wait": optional seconds to wait after starting it}. Entries are validated
-        locally before any request. persist_user_preferences also saves the order in
-        Unraid's user preferences. Changes which containers start at boot.
+        locally before any request. Upstream replaces the whole autostart list, so
+        this reads the current list, merges your changes (existing order kept, new
+        enables appended, auto_start=false removes) and sends the full list; unknown
+        ids are rejected before the mutation. persist_user_preferences also replaces
+        the UI order. Returns the resulting {"ok", "autostart"} list.
         Requires confirm=true."""
         api_version = get_app_context(ctx).api_version
         return await guarded(

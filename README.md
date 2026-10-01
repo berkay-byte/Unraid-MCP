@@ -37,7 +37,7 @@ live per-container CPU%/memory stats, VMs, shares, notifications, UPS, network
 interfaces, and a one-shot `get_health_summary` for quick triage.
 
 Opt-in mutating tools (start/stop the array, control Docker/VMs, run parity checks,
-manage notifications, back up the flash drive) only show up when you set `UNRAID_MCP_ALLOW_MUTATIONS=true`, and
+manage notifications) only show up when you set `UNRAID_MCP_ALLOW_MUTATIONS=true`, and
 every one of them needs `confirm=true`. That includes `create_notification` — an
 agent→operator channel that posts a persistent message straight into the Unraid
 WebGUI's notification bell, so an agent that spots a problem can leave a note where

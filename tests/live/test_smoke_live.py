@@ -373,10 +373,6 @@ MUTATION_REFUSALS: list[tuple[str, Callable[[UnraidClient], Awaitable[Any]]]] = 
             c, [{"id": "x", "auto_start": True}], confirm=False
         ),
     ),
-    (
-        "start_flash_backup",
-        lambda c: system.do_start_flash_backup(c, "r", "/boot", "d", confirm=False),
-    ),
 ]
 
 

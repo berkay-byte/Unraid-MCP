@@ -5,7 +5,6 @@ from __future__ import annotations
 from typing import Any
 
 from mcp.server.mcpserver import Context, MCPServer
-from mcp.server.mcpserver.exceptions import ToolError
 
 from .. import queries
 from ..client import UnraidClient
@@ -19,12 +18,10 @@ from ..formatting import (
     shape_system_time,
 )
 from ._base import (
-    MUTATING,
     READ_ONLY,
     feature_unsupported,
     get_app_context,
     guarded,
-    require_confirm,
     safe_query,
     unsupported_field_error,
 )
@@ -112,75 +109,3 @@ def register(mcp: MCPServer, settings: Settings) -> None:
         and spot NTP misconfig."""
         api_version = get_app_context(ctx).api_version
         return await guarded(ctx, fetch_system_time, api_version=api_version)
-
-
-async def do_start_flash_backup(
-    client: UnraidClient,
-    remote_name: str,
-    source_path: str,
-    destination_path: str,
-    options: dict[str, Any] | None = None,
-    confirm: bool = False,
-    *,
-    api_version: str | None = None,
-) -> dict[str, Any]:
-    """Start a flash-drive backup to a pre-configured rclone remote."""
-    require_confirm(
-        confirm,
-        f"start a flash backup of '{source_path}' to remote '{remote_name}':'{destination_path}' "
-        "(uploads data to the remote; may overwrite files there)",
-    )
-    for name, value in (
-        ("remote_name", remote_name),
-        ("source_path", source_path),
-        ("destination_path", destination_path),
-    ):
-        if not isinstance(value, str) or not value.strip():
-            raise ToolError(f"{name} must be a non-empty string.")
-    if options is not None and not isinstance(options, dict):
-        raise ToolError("options must be an object of backup options (e.g. {'--dry-run': true}).")
-    variables: dict[str, Any] = {
-        "remoteName": remote_name,
-        "sourcePath": source_path,
-        "destinationPath": destination_path,
-    }
-    if options is not None:
-        variables["options"] = options
-    try:
-        result = await client.execute(queries.INITIATE_FLASH_BACKUP, {"input": variables})
-    except UnraidGraphQLError as exc:
-        if unsupported_field_error(exc):
-            raise feature_unsupported("flash backup", api_version=api_version) from None
-        raise
-    status = (result or {}).get("initiateFlashBackup")
-    if not isinstance(status, dict) or not status.get("status"):
-        raise ToolError("The Unraid API returned no status for the flash backup request.")
-    return {"status": status["status"], "job_id": status.get("jobId")}
-
-
-def register_mutations(mcp: MCPServer, settings: Settings) -> None:
-    @mcp.tool(annotations=MUTATING)
-    async def start_flash_backup(
-        ctx: Context,
-        remote_name: str,
-        source_path: str,
-        destination_path: str,
-        options: dict[str, Any] | None = None,
-        confirm: bool = False,
-    ) -> dict[str, Any]:
-        """Start a flash-drive backup to an rclone remote already configured on the
-        server (typical source_path "/boot"). Uploads data to the remote and may
-        overwrite files at destination_path. options: optional rclone flags, e.g.
-        {"--dry-run": true}. Returns {"status", "job_id"}; the backup runs
-        asynchronously. Requires confirm=true."""
-        api_version = get_app_context(ctx).api_version
-        return await guarded(
-            ctx,
-            do_start_flash_backup,
-            remote_name,
-            source_path,
-            destination_path,
-            options,
-            confirm,
-            api_version=api_version,
-        )

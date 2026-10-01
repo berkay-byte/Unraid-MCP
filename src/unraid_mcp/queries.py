@@ -360,19 +360,20 @@ mutation RefreshDockerDigests {
 }
 """
 
-# Set per-container autostart flag / start-wait. Returns Boolean!.
+# Current autostart state (list order = boot order via autoStartOrder).
+DOCKER_AUTOSTART_STATE = """
+query DockerAutostartState {
+  docker { containers { id names autoStart autoStartOrder autoStartWait } }
+}
+"""
+
+# REPLACES the whole autostart config with `entries` (list order = boot order).
+# Returns Boolean!.
 UPDATE_DOCKER_AUTOSTART = """
 mutation UpdateDockerAutostart(
   $entries: [DockerAutostartEntryInput!]!, $persist: Boolean
 ) {
   docker { updateAutostartConfiguration(entries: $entries, persistUserPreferences: $persist) }
-}
-"""
-
-# Kick off an rclone-based flash backup to a configured remote.
-INITIATE_FLASH_BACKUP = """
-mutation InitiateFlashBackup($input: InitiateFlashBackupInput!) {
-  initiateFlashBackup(input: $input) { status jobId }
 }
 """
 
