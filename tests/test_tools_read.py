@@ -984,3 +984,45 @@ async def test_health_summary_omits_top_alerts_when_unsupported(mocked_client):
     async with mocked_client(responses) as (c, r):
         out = await misc.fetch_health(c)
     assert "top_alerts" not in out
+
+
+async def test_warnings_and_alerts_truncates_long_description_and_keeps_null(mocked_client):
+    long_item = {**_ALERT_ITEM, "description": "x" * 5000}
+    null_item = {**_ALERT_ITEM, "id": "n2", "description": None}
+    resp = _resp({"notifications": {"warningsAndAlerts": [long_item, null_item]}})
+    async with mocked_client(resp) as (c, r):
+        out = await notifications.fetch_warnings_and_alerts(c)
+    assert len(out[0]["description"]) < 600
+    assert out[0]["description"].endswith("[truncated]")
+    assert out[1]["description"] is None
+
+
+async def test_list_notifications_truncates_long_description(mocked_client):
+    resp = _resp({"notifications": {"list": [{"id": "n1", "description": "y" * 5000}]}})
+    async with mocked_client(resp) as (c, r):
+        out = await notifications.fetch_notifications(c)
+    assert out[0]["description"].endswith("[truncated]")
+
+
+async def test_warnings_and_alerts_limit(mocked_client):
+    items = [{**_ALERT_ITEM, "id": f"n{i}"} for i in range(30)]
+    async with mocked_client(_resp({"notifications": {"warningsAndAlerts": items}})) as (c, r):
+        assert len(await notifications.fetch_warnings_and_alerts(c)) == 20
+        assert len(await notifications.fetch_warnings_and_alerts(c, 3)) == 3
+    for bad in (0, 101):
+        with pytest.raises(ToolError, match="limit"):
+            await notifications.fetch_warnings_and_alerts(c, bad)
+
+
+async def test_health_attention_when_overview_fails_but_alerts_present(mocked_client):
+    overview_err = httpx.Response(200, json={"errors": [{"message": "boom"}], "data": None})
+    responses = [
+        _resp({"array": {"state": "STARTED", "disks": []}}),
+        _resp({"upsDevices": []}),
+        overview_err,
+        _resp({"notifications": {"warningsAndAlerts": [_ALERT_ITEM]}}),
+    ]
+    async with mocked_client(responses) as (c, r):
+        out = await misc.fetch_health(c)
+    assert out["overall"] == "attention"
+    assert out["top_alerts"][0]["importance"] == "ALERT"

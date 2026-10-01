@@ -28,6 +28,8 @@ from ._base import (
     unsupported_field_error,
 )
 
+# The upstream query takes no arguments, so the cap is applied client-side.
+MAX_ALERTS_LIMIT = 100
 _VALID_IMPORTANCE = {"INFO", "WARNING", "ALERT"}
 
 
@@ -57,10 +59,13 @@ async def fetch_notifications(
 
 
 async def fetch_warnings_and_alerts(
-    client: UnraidClient, *, api_version: str | None = None
+    client: UnraidClient, limit: int = 20, *, api_version: str | None = None
 ) -> list[dict[str, Any]]:
+    if not 1 <= limit <= MAX_ALERTS_LIMIT:
+        raise ToolError(f"limit must be between 1 and {MAX_ALERTS_LIMIT}.")
     try:
-        return shape_warnings_and_alerts(await client.execute(queries.WARNINGS_AND_ALERTS))
+        items = shape_warnings_and_alerts(await client.execute(queries.WARNINGS_AND_ALERTS))
+        return items[:limit]
     except UnraidGraphQLError as exc:
         if unsupported_field_error(exc):
             raise feature_unsupported("warnings and alerts", api_version=api_version) from None
@@ -187,11 +192,12 @@ def register(mcp: MCPServer, settings: Settings) -> None:
         return await guarded(ctx, fetch_notifications, notification_type, importance, limit, offset)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def list_warnings_and_alerts(ctx: Context) -> list[dict[str, Any]]:
+    async def list_warnings_and_alerts(ctx: Context, limit: int = 20) -> list[dict[str, Any]]:
         """List current unread WARNING/ALERT notifications (deduplicated, latest first) —
-        the cheapest "is anything wrong?" check. Same item shape as list_notifications."""
+        the cheapest "is anything wrong?" check. Same item shape as list_notifications;
+        long descriptions are truncated. limit is 1-100 (default 20)."""
         api_version = get_app_context(ctx).api_version
-        return await guarded(ctx, fetch_warnings_and_alerts, api_version=api_version)
+        return await guarded(ctx, fetch_warnings_and_alerts, limit, api_version=api_version)
 
 
 def register_mutations(mcp: MCPServer, settings: Settings) -> None:

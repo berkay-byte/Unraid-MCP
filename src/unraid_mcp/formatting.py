@@ -422,14 +422,27 @@ def shape_flash(data: dict | None) -> dict[str, Any]:
     }
 
 
+_NOTIFICATION_DESC_MAX_CHARS = 500
+
+
+def _truncate_description(item: dict[str, Any]) -> dict[str, Any]:
+    desc = item.get("description")
+    if isinstance(desc, str) and len(desc) > _NOTIFICATION_DESC_MAX_CHARS:
+        return {
+            **item,
+            "description": desc[:_NOTIFICATION_DESC_MAX_CHARS] + _TRUNCATION_MARKER,
+        }
+    return item
+
+
 def shape_notifications(data: dict | None) -> list[dict[str, Any]]:
     notifications = (data or {}).get("notifications") or {}
-    return notifications.get("list") or []
+    return [_truncate_description(n) for n in (notifications.get("list") or [])]
 
 
 def shape_warnings_and_alerts(data: dict | None) -> list[dict[str, Any]]:
     notifications = (data or {}).get("notifications") or {}
-    return notifications.get("warningsAndAlerts") or []
+    return [_truncate_description(n) for n in (notifications.get("warningsAndAlerts") or [])]
 
 
 def shape_notifications_overview(data: dict | None) -> dict[str, Any]:
@@ -591,7 +604,7 @@ def summarize_health(
     ]
     unhealthy = [d for d in disks if d and d.get("health") not in ("healthy", None)]
     unread = (notifications_overview or {}).get("unread") or {}
-    has_attention = bool(unhealthy or unread.get("alert") or unread.get("warning"))
+    has_attention = bool(unhealthy or unread.get("alert") or unread.get("warning") or top_alerts)
     result = {
         "overall": "attention" if has_attention else "ok",
         "array_state": array_out.get("state"),
