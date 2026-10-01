@@ -244,6 +244,8 @@ def build_server(settings: Settings) -> MCPServer:
 
     mcp = MCPServer(
         "unraid",
+        title="Unraid",
+        website_url="https://github.com/tarakanof/Unraid-MCP",
         instructions=INSTRUCTIONS,
         version=_server_version(),
         lifespan=lifespan,

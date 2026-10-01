@@ -11,7 +11,14 @@ from ..client import UnraidClient
 from ..config import Settings
 from ..errors import UnraidGraphQLError
 from ..formatting import shape_mutation_result, shape_vms
-from ._base import DESTRUCTIVE, MUTATING, READ_ONLY, guarded, require_confirm
+from ._base import (
+    DESTRUCTIVE,
+    DESTRUCTIVE_IDEMPOTENT,
+    MUTATING_IDEMPOTENT,
+    READ_ONLY,
+    guarded,
+    require_confirm,
+)
 
 
 def _is_missing_domains_field_error(exc: UnraidGraphQLError) -> bool:
@@ -69,7 +76,7 @@ async def do_reset_vm(client: UnraidClient, vm_id: str, confirm: bool) -> dict[s
 
 
 def register(mcp: MCPServer, settings: Settings) -> None:
-    @mcp.tool(annotations=READ_ONLY)
+    @mcp.tool(title="List VMs", annotations=READ_ONLY)
     async def list_vms(ctx: Context) -> list[dict[str, Any]]:
         """List virtual machines with id, name, and state (state values come
         from the `VmState` enum)."""
@@ -77,38 +84,38 @@ def register(mcp: MCPServer, settings: Settings) -> None:
 
 
 def register_mutations(mcp: MCPServer, settings: Settings) -> None:
-    @mcp.tool(annotations=MUTATING)
+    @mcp.tool(title="Start VM", annotations=MUTATING_IDEMPOTENT)
     async def start_vm(ctx: Context, vm_id: str, confirm: bool = False) -> dict[str, Any]:
         """Start a VM by its id (from list_vms). Requires confirm=true."""
         return await guarded(ctx, do_start_vm, vm_id, confirm)
 
-    @mcp.tool(annotations=DESTRUCTIVE)
+    @mcp.tool(title="Stop VM", annotations=DESTRUCTIVE_IDEMPOTENT)
     async def stop_vm(ctx: Context, vm_id: str, confirm: bool = False) -> dict[str, Any]:
         """Gracefully shut down a VM by id. Requires confirm=true."""
         return await guarded(ctx, do_stop_vm, vm_id, confirm)
 
-    @mcp.tool(annotations=MUTATING)
+    @mcp.tool(title="Pause VM", annotations=MUTATING_IDEMPOTENT)
     async def pause_vm(ctx: Context, vm_id: str, confirm: bool = False) -> dict[str, Any]:
         """Pause a running VM by id. Requires confirm=true."""
         return await guarded(ctx, do_pause_vm, vm_id, confirm)
 
-    @mcp.tool(annotations=MUTATING)
+    @mcp.tool(title="Resume VM", annotations=MUTATING_IDEMPOTENT)
     async def resume_vm(ctx: Context, vm_id: str, confirm: bool = False) -> dict[str, Any]:
         """Resume a paused VM by id. Requires confirm=true."""
         return await guarded(ctx, do_resume_vm, vm_id, confirm)
 
-    @mcp.tool(annotations=DESTRUCTIVE)
+    @mcp.tool(title="Reboot VM", annotations=DESTRUCTIVE)
     async def reboot_vm(ctx: Context, vm_id: str, confirm: bool = False) -> dict[str, Any]:
         """Reboot a VM by id. Requires confirm=true."""
         return await guarded(ctx, do_reboot_vm, vm_id, confirm)
 
-    @mcp.tool(annotations=DESTRUCTIVE)
+    @mcp.tool(title="Force Stop VM", annotations=DESTRUCTIVE_IDEMPOTENT)
     async def force_stop_vm(ctx: Context, vm_id: str, confirm: bool = False) -> dict[str, Any]:
         """Force-stop (hard power off) a VM by id — may lose unsaved guest state.
         Requires confirm=true."""
         return await guarded(ctx, do_force_stop_vm, vm_id, confirm)
 
-    @mcp.tool(annotations=DESTRUCTIVE)
+    @mcp.tool(title="Reset VM", annotations=DESTRUCTIVE)
     async def reset_vm(ctx: Context, vm_id: str, confirm: bool = False) -> dict[str, Any]:
         """Hard-reset a VM by id — like pressing the physical reset button;
         unsaved guest state is lost. Requires confirm=true."""

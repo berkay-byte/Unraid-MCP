@@ -74,7 +74,7 @@ async def fetch_services(
 
 
 def register(mcp: MCPServer, settings: Settings) -> None:
-    @mcp.tool(annotations=READ_ONLY)
+    @mcp.tool(title="Get System Info", annotations=READ_ONLY)
     async def get_system_info(ctx: Context) -> dict[str, Any]:
         """Get Unraid host system information: OS/kernel, CPU, memory layout,
         motherboard, Unraid + API versions, and uptime."""
@@ -89,21 +89,21 @@ def register(mcp: MCPServer, settings: Settings) -> None:
             "unraid_version": app.unraid_version,
         }
 
-    @mcp.tool(annotations=READ_ONLY)
+    @mcp.tool(title="Get System Metrics", annotations=READ_ONLY)
     async def get_system_metrics(ctx: Context) -> dict[str, Any]:
         """Get live utilization: total/per-core CPU %, memory/swap usage,
         temperatures."""
         api_version = get_app_context(ctx).api_version
         return await guarded(ctx, fetch_metrics, api_version=api_version)
 
-    @mcp.tool(annotations=READ_ONLY)
+    @mcp.tool(title="Get Services", annotations=READ_ONLY)
     async def get_services(ctx: Context) -> list[dict[str, Any]]:
         """Health of the Unraid services stack (API, dynamix, etc.): name,
         online, uptime, version."""
         api_version = get_app_context(ctx).api_version
         return await guarded(ctx, fetch_services, api_version=api_version)
 
-    @mcp.tool(annotations=READ_ONLY)
+    @mcp.tool(title="Get System Time", annotations=READ_ONLY)
     async def get_system_time(ctx: Context) -> dict[str, Any]:
         """Get server time, timezone, and NTP config — correlate log timestamps
         and spot NTP misconfig."""

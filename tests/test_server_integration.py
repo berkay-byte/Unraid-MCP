@@ -191,3 +191,40 @@ async def test_legacy_sessions_silently_drop_cache_hints(settings_factory):
     assert tools.ttl_ms == 0
     assert tools.cache_scope == "private"
     assert "ttl_ms" not in tools.model_fields_set
+
+
+async def test_every_tool_has_title_and_explicit_annotations(settings_factory):
+    mcp = build_server(settings_factory(allow_mutations=True))
+    async with Client(mcp, raise_exceptions=True) as session:
+        tools = (await session.list_tools()).tools
+    assert len(tools) > 40
+    for t in tools:
+        assert t.title and t.title.strip(), f"{t.name}: missing title"
+        assert t.annotations is not None, f"{t.name}: missing annotations"
+        assert t.annotations.read_only_hint is not None, f"{t.name}: readOnlyHint unset"
+        assert t.annotations.idempotent_hint is not None or t.annotations.read_only_hint is False
+
+
+async def test_idempotent_hint_advertised(settings_factory):
+    mcp = build_server(settings_factory(allow_mutations=True))
+    async with Client(mcp, raise_exceptions=True) as session:
+        by_name = {t.name: t for t in (await session.list_tools()).tools}
+    assert by_name["get_system_info"].annotations.idempotent_hint is True
+    assert by_name["start_docker_container"].annotations.idempotent_hint is True
+    assert by_name["stop_docker_container"].annotations.idempotent_hint is True
+    assert by_name["stop_docker_container"].annotations.destructive_hint is True
+    # repeating these has further effect, so they must not claim idempotence
+    for name in ("restart_docker_container", "create_notification", "reboot_vm"):
+        assert not by_name[name].annotations.idempotent_hint, name
+    assert by_name["stop_docker_container"].title == "Stop Docker Container"
+
+
+async def test_server_info_has_title_and_website(settings_factory):
+    with respx.mock:
+        respx.post(URL).mock(return_value=httpx.Response(200, json={"data": {}}))
+        mcp = build_server(settings_factory(allow_mutations=False))
+        async with Client(mcp, raise_exceptions=True, mode="legacy") as session:
+            info = session.server_info
+    assert info is not None
+    assert info.title == "Unraid"
+    assert info.website_url == "https://github.com/tarakanof/Unraid-MCP"

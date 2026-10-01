@@ -17,9 +17,17 @@ if TYPE_CHECKING:  # avoid a runtime import cycle (server imports tools imports 
 
 # Hints for MCP clients. Read tools touch an external system (open world) but
 # never change it; destructive mutations are flagged so hosts can warn/gate.
-READ_ONLY = ToolAnnotations(read_only_hint=True, open_world_hint=True)
+# ``*_IDEMPOTENT`` marks tools where repeating the call has no further effect
+# (start/stop/pause/archive/delete-by-id), so clients may skip re-confirmation.
+READ_ONLY = ToolAnnotations(read_only_hint=True, idempotent_hint=True, open_world_hint=True)
 MUTATING = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=True)
+MUTATING_IDEMPOTENT = ToolAnnotations(
+    read_only_hint=False, destructive_hint=False, idempotent_hint=True, open_world_hint=True
+)
 DESTRUCTIVE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=True)
+DESTRUCTIVE_IDEMPOTENT = ToolAnnotations(
+    read_only_hint=False, destructive_hint=True, idempotent_hint=True, open_world_hint=True
+)
 
 
 def get_app_context(ctx: Context) -> AppContext:
