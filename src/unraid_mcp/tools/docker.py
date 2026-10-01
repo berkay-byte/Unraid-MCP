@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any
+from typing import Annotated, Any
 
-from mcp.server.mcpserver import Context, MCPServer
+from mcp.server.mcpserver import Context, Elicit, ElicitationResult, MCPServer, Resolve
 from mcp.server.mcpserver.exceptions import ToolError
 
 from .. import queries, subscriptions
@@ -27,10 +27,12 @@ from ._base import (
     DESTRUCTIVE,
     MUTATING,
     READ_ONLY,
+    Confirmation,
     feature_unsupported,
     get_app_context,
     guarded,
     require_confirm,
+    require_confirmation,
     unsupported_field_error,
 )
 
@@ -395,6 +397,53 @@ async def do_remove_container(
     return shape_mutation_result(result)
 
 
+def _confirm_stop_docker_container(
+    ctx: Context, confirm: bool, container_id: str
+) -> Confirmation | Elicit[Confirmation]:
+    return require_confirmation(ctx, confirm, f"stop container '{container_id}'")
+
+
+def _confirm_restart_docker_container(
+    ctx: Context, confirm: bool, container_id: str
+) -> Confirmation | Elicit[Confirmation]:
+    return require_confirmation(ctx, confirm, f"restart container '{container_id}'")
+
+
+def _confirm_update_docker_container(
+    ctx: Context, confirm: bool, container_id: str
+) -> Confirmation | Elicit[Confirmation]:
+    return require_confirmation(
+        ctx, confirm, f"update (pull + recreate) container '{container_id}'"
+    )
+
+
+def _confirm_update_docker_containers(
+    ctx: Context, confirm: bool, container_ids: list[str]
+) -> Confirmation | Elicit[Confirmation]:
+    return require_confirmation(
+        ctx, confirm, f"update (pull + recreate) {len(container_ids)} container(s): {container_ids}"
+    )
+
+
+def _confirm_remove_docker_container(
+    ctx: Context, confirm: bool, container_id: str, with_image: bool
+) -> Confirmation | Elicit[Confirmation]:
+    consequence = f"remove container '{container_id}' (irreversible)"
+    if with_image:
+        consequence = (
+            f"remove container '{container_id}' AND delete its underlying image (irreversible)"
+        )
+    return require_confirmation(ctx, confirm, consequence)
+
+
+def _confirm_update_all_docker_containers(
+    ctx: Context, confirm: bool
+) -> Confirmation | Elicit[Confirmation]:
+    return require_confirmation(
+        ctx, confirm, "update (pull + recreate) EVERY container with an available update"
+    )
+
+
 def register(mcp: MCPServer, settings: Settings) -> None:
     @mcp.tool(annotations=READ_ONLY)
     async def list_docker_containers(ctx: Context) -> list[dict[str, Any]]:
@@ -476,20 +525,36 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
 
     @mcp.tool(annotations=DESTRUCTIVE)
     async def stop_docker_container(
-        ctx: Context, container_id: str, confirm: bool = False
+        ctx: Context,
+        container_id: str,
+        confirm: bool = False,
+        *,
+        confirmation: Annotated[
+            ElicitationResult[Confirmation], Resolve(_confirm_stop_docker_container)
+        ],
     ) -> dict[str, Any]:
         """Stop a running Docker container by id. Requires confirm=true."""
-        return await guarded(ctx, do_stop_container, container_id, confirm)
+        return await guarded(
+            ctx, do_stop_container, container_id, confirm, confirmation=confirmation
+        )
 
     @mcp.tool(annotations=DESTRUCTIVE)
     async def restart_docker_container(
-        ctx: Context, container_id: str, confirm: bool = False
+        ctx: Context,
+        container_id: str,
+        confirm: bool = False,
+        *,
+        confirmation: Annotated[
+            ElicitationResult[Confirmation], Resolve(_confirm_restart_docker_container)
+        ],
     ) -> dict[str, Any]:
         """Restart a Docker container by id. Atomic on current Unraid APIs (native
         `docker.restart`); on older builds falls back to stop-then-start, which is
         not atomic — if the start fails the container is left stopped.
         Requires confirm=true."""
-        return await guarded(ctx, do_restart_container, container_id, confirm)
+        return await guarded(
+            ctx, do_restart_container, container_id, confirm, confirmation=confirmation
+        )
 
     @mcp.tool(annotations=MUTATING)
     async def pause_docker_container(
@@ -517,7 +582,13 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
 
     @mcp.tool(annotations=DESTRUCTIVE)
     async def update_docker_container(
-        ctx: Context, container_id: str, confirm: bool = False
+        ctx: Context,
+        container_id: str,
+        confirm: bool = False,
+        *,
+        confirmation: Annotated[
+            ElicitationResult[Confirmation], Resolve(_confirm_update_docker_container)
+        ],
     ) -> dict[str, Any]:
         """Update one Docker container: pull its latest image and RECREATE the
         container (id from list_docker_containers / check_docker_updates). The
@@ -525,12 +596,23 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
         new image. Requires confirm=true."""
         api_version = get_app_context(ctx).api_version
         return await guarded(
-            ctx, do_update_container, container_id, confirm, api_version=api_version
+            ctx,
+            do_update_container,
+            container_id,
+            confirm,
+            api_version=api_version,
+            confirmation=confirmation,
         )
 
     @mcp.tool(annotations=DESTRUCTIVE)
     async def update_docker_containers(
-        ctx: Context, container_ids: list[str], confirm: bool = False
+        ctx: Context,
+        container_ids: list[str],
+        confirm: bool = False,
+        *,
+        confirmation: Annotated[
+            ElicitationResult[Confirmation], Resolve(_confirm_update_docker_containers)
+        ],
     ) -> list[dict[str, Any]]:
         """Update a batch of Docker containers: pull each latest image and
         RECREATE those containers (ids from list_docker_containers /
@@ -539,7 +621,12 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
         confirm=true."""
         api_version = get_app_context(ctx).api_version
         return await guarded(
-            ctx, do_update_containers, container_ids, confirm, api_version=api_version
+            ctx,
+            do_update_containers,
+            container_ids,
+            confirm,
+            api_version=api_version,
+            confirmation=confirmation,
         )
 
 
@@ -549,18 +636,32 @@ def register_dangerous(mcp: MCPServer, settings: Settings) -> None:
 
     @mcp.tool(annotations=DESTRUCTIVE)
     async def remove_docker_container(
-        ctx: Context, container_id: str, with_image: bool = False, confirm: bool = False
+        ctx: Context,
+        container_id: str,
+        with_image: bool = False,
+        confirm: bool = False,
+        *,
+        confirmation: Annotated[
+            ElicitationResult[Confirmation], Resolve(_confirm_remove_docker_container)
+        ],
     ) -> dict[str, Any]:
         """DANGEROUS. Permanently remove a Docker container by id (from
         list_docker_containers). This deletes the container and is irreversible. Set
         with_image=true to ALSO delete the container's underlying image (other
         containers using that image would then need to re-pull it). Requires
         confirm=true."""
-        return await guarded(ctx, do_remove_container, container_id, with_image, confirm)
+        return await guarded(
+            ctx, do_remove_container, container_id, with_image, confirm, confirmation=confirmation
+        )
 
     @mcp.tool(annotations=DESTRUCTIVE)
     async def update_all_docker_containers(
-        ctx: Context, confirm: bool = False
+        ctx: Context,
+        confirm: bool = False,
+        *,
+        confirmation: Annotated[
+            ElicitationResult[Confirmation], Resolve(_confirm_update_all_docker_containers)
+        ],
     ) -> list[dict[str, Any]]:
         """DANGEROUS. Update EVERY Docker container that has an available image
         update: for each one this pulls the new image and RECREATES the
@@ -570,4 +671,10 @@ def register_dangerous(mcp: MCPServer, settings: Settings) -> None:
         here; use update_docker_container / update_docker_containers to update a
         specific target instead. Requires confirm=true."""
         api_version = get_app_context(ctx).api_version
-        return await guarded(ctx, do_update_all_containers, confirm, api_version=api_version)
+        return await guarded(
+            ctx,
+            do_update_all_containers,
+            confirm,
+            api_version=api_version,
+            confirmation=confirmation,
+        )

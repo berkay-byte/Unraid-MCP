@@ -5,9 +5,10 @@ from __future__ import annotations
 from collections.abc import Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
-from mcp.server.mcpserver import Context
+from mcp.server.mcpserver import Context, Elicit, ElicitationResult
 from mcp.server.mcpserver.exceptions import ToolError
 from mcp.types import ToolAnnotations
+from pydantic import BaseModel, Field
 
 from ..client import UnraidClient
 from ..errors import UnraidError, UnraidGraphQLError
@@ -95,10 +96,15 @@ async def guarded(
     ctx: Context,
     fn: Callable[..., Awaitable[Any]],
     *args: Any,
+    confirmation: ElicitationResult[Confirmation] | None = None,
     **kwargs: Any,
 ) -> Any:
     """Run a tool logic function with the shared client, translating domain
     errors into user-facing ``ToolError`` messages (which never contain secrets)."""
+    if confirmation is not None and (
+        confirmation.action != "accept" or not confirmation.data.proceed
+    ):
+        raise ToolError("cancelled by user")
     client = get_client(ctx)
     try:
         return await fn(client, *args, **kwargs)
@@ -131,3 +137,26 @@ def require_confirm(confirm: bool, action: str) -> None:
             f"Refusing to {action} without explicit confirmation. "
             "Re-call this tool with confirm=true if you really intend to."
         )
+
+
+class Confirmation(BaseModel):
+    """Human approval of the consequence shown by the host."""
+
+    proceed: bool = Field(description="Accept this action and its consequences")
+
+
+def require_confirmation(
+    ctx: Context, confirm: bool, consequence: str
+) -> Confirmation | Elicit[Confirmation]:
+    """Resolver gate for destructive tools, before their bodies can perform I/O.
+
+    The SDK transports Elicit through MRTR on 2026 clients and through a live
+    elicitation request on older clients. Clients without form elicitation keep
+    the confirm-only gate. A bare elicitation capability means form support.
+    """
+    require_confirm(confirm, consequence)
+    capabilities = ctx.client_capabilities
+    elicitation = capabilities.elicitation if capabilities is not None else None
+    if elicitation is not None and (elicitation.form is not None or elicitation.url is None):
+        return Elicit(consequence, Confirmation)
+    return Confirmation(proceed=True)
