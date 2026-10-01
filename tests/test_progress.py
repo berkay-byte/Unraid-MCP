@@ -17,8 +17,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 
 from unraid_mcp import subscriptions
 from unraid_mcp.server import build_server
-from unraid_mcp.tools import docker
-from unraid_mcp.tools._base import with_heartbeat
+from unraid_mcp.tools import _base, docker
+from unraid_mcp.tools._base import progress_reporter, with_heartbeat
 
 from .test_tools_stats import _ack, _fake_connect, _FakeTransport, _next, _settings
 
@@ -32,6 +32,27 @@ def _recorder():
         events.append((progress, total, message))
 
     return events, cb
+
+
+def _assert_monotonic(events):
+    values = [e[0] for e in events]
+    assert values == sorted(set(values)), values  # strictly increasing
+    assert all(e[1] is None for e in events)  # total is never sent (unknown)
+
+
+class _StubCtx:
+    """Minimal Context stand-in: records report_progress calls, optionally stalls."""
+
+    def __init__(self, *, stall=False, fail=False):
+        self.calls = []
+        self.stall, self.fail = stall, fail
+
+    async def report_progress(self, progress, total=None, message=None):
+        self.calls.append((progress, total, message))
+        if self.stall:
+            await asyncio.Event().wait()
+        if self.fail:
+            raise RuntimeError("client went away")
 
 
 def _update_route(delay: float = 0.0, *, key: str = "updateContainers", n: int = 2):
@@ -64,6 +85,7 @@ async def test_stats_progress_per_container_through_protocol(settings_factory, m
     assert result.is_error is False
     assert result.structured_content["sampled"] == 2
     assert [e[0] for e in events] == [1, 2]
+    _assert_monotonic(events)
     assert "Sampled 2" in events[-1][2]
 
 
@@ -80,14 +102,54 @@ async def test_stats_without_progress_token_unchanged(settings_factory, monkeypa
 
 
 async def test_stats_progress_failure_is_swallowed():
-    async def boom(*_a):
-        raise RuntimeError("client went away")
-
     transport = _FakeTransport([_ack(), _next("docker:a"), _next("docker:b"), _next("docker:a")])
     result = await docker.fetch_container_stats(
-        None, settings=_settings(), connect=_fake_connect(transport), progress=boom
+        None,
+        settings=_settings(),
+        connect=_fake_connect(transport),
+        progress=progress_reporter(_StubCtx(fail=True)),
     )
     assert result["sampled"] == 2
+
+
+async def test_stalled_reporter_cannot_hang_sampling(monkeypatch):
+    monkeypatch.setattr(_base, "PROGRESS_TIMEOUT_S", 0.05)
+    ctx = _StubCtx(stall=True)
+    transport = _FakeTransport([_ack(), _next("docker:a"), _next("docker:b"), _next("docker:a")])
+    result = await asyncio.wait_for(
+        docker.fetch_container_stats(
+            None,
+            settings=_settings(),
+            connect=_fake_connect(transport),
+            progress=progress_reporter(ctx),
+        ),
+        timeout=3,
+    )
+    assert result["sampled"] == 2 and len(ctx.calls) == 2
+
+
+async def test_stalled_reporter_cannot_hang_updates(monkeypatch, mocked_client):
+    monkeypatch.setattr(_base, "PROGRESS_TIMEOUT_S", 0.05)
+    ctx = _StubCtx(stall=True)
+    body = {"data": {"docker": {"updateContainers": [{"id": "1:a", "names": ["/a"]}]}}}
+    async with mocked_client(httpx.Response(200, json=body)) as (client, _route):
+        result = await asyncio.wait_for(
+            docker.do_update_containers(
+                client, ["1:a"], confirm=True, progress=progress_reporter(ctx)
+            ),
+            timeout=3,
+        )
+    assert result[0]["id"] == "1:a"
+    assert len(ctx.calls) == 2  # start + completion, each bounded
+
+
+async def test_reporter_counter_strictly_increases():
+    ctx = _StubCtx()
+    report = progress_reporter(ctx)
+    for m in "abc":
+        await report(m)
+    assert [c[0] for c in ctx.calls] == [1, 2, 3]
+    assert all(c[1] is None for c in ctx.calls)
 
 
 # ── Batch updates ─────────────────────────────────────────────────────────────
@@ -97,7 +159,7 @@ async def test_batch_update_progress_through_protocol(settings_factory, monkeypa
     monkeypatch.setattr(docker, "UPDATE_HEARTBEAT_S", 0.05)
     events, cb = _recorder()
     with respx.mock:
-        respx.post(URL).mock(side_effect=_update_route(delay=0.25))
+        respx.post(URL).mock(side_effect=_update_route(delay=0.4))
         mcp = build_server(settings_factory(allow_mutations=True))
         async with Client(mcp, raise_exceptions=True) as session:
             result = await session.call_tool(
@@ -107,9 +169,11 @@ async def test_batch_update_progress_through_protocol(settings_factory, monkeypa
             )
     assert result.is_error is False
     assert len(events) >= 2
-    assert events[0][:2] == (0, 2) and "Updating 2" in events[0][2]
-    assert events[-1][:2] == (2, 2) and "Updated 2" in events[-1][2]
-    assert any("elapsed" in (e[2] or "") for e in events[1:-1])  # heartbeat
+    _assert_monotonic(events)
+    assert "Updating 2" in events[0][2] and "Updated 2" in events[-1][2]
+    # delay (0.4s) >> interval (0.05s): several heartbeats, more than n=2 containers
+    beats = [e for e in events[1:-1] if "elapsed" in (e[2] or "")]
+    assert len(beats) >= 3
 
 
 async def test_update_all_progress_through_protocol(settings_factory, monkeypatch):
@@ -124,7 +188,8 @@ async def test_update_all_progress_through_protocol(settings_factory, monkeypatc
             )
     assert result.is_error is False
     assert len(events) >= 2
-    assert events[-1][:2] == (2, 2)
+    _assert_monotonic(events)
+    assert "Updated 2" in events[-1][2]
 
 
 async def test_batch_update_without_progress_token_unchanged(settings_factory):
@@ -140,19 +205,21 @@ async def test_batch_update_without_progress_token_unchanged(settings_factory):
 
 
 async def test_update_refused_without_confirm_reports_no_progress(mocked_client):
-    events, cb = _recorder()
+    ctx = _StubCtx()
     async with mocked_client(httpx.Response(200, json={"data": {}})) as (client, route):
         with pytest.raises(ToolError):
-            await docker.do_update_containers(client, ["1:a"], confirm=False, progress=cb)
+            await docker.do_update_containers(
+                client, ["1:a"], confirm=False, progress=progress_reporter(ctx)
+            )
         assert route.call_count == 0
-    assert events == []
+    assert ctx.calls == []
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
 async def test_with_heartbeat_swallows_callback_errors_and_cancels_task():
-    async def boom(*_a):
+    async def boom(_m):
         raise RuntimeError("nope")
 
     async def work():

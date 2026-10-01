@@ -205,7 +205,7 @@ async def fetch_container_stats(
 
     async def _on_new(count: int) -> None:
         if progress is not None:
-            await progress(count, None, f"Sampled {count} container(s)")
+            await progress(f"Sampled {count} container(s)")
 
     open_conn = connect or subscriptions.open_ws
     api_key = settings.api_key.get_secret_value()
@@ -363,13 +363,12 @@ async def do_update_containers(
         )
     n = len(container_ids)
     if progress is not None:
-        await progress(0, n, f"Updating {n} container(s)")
+        await progress(f"Updating {n} container(s)")
     try:
         result = await with_heartbeat(
             client.execute(queries.UPDATE_CONTAINERS, {"ids": container_ids}),
             progress,
             interval_s=UPDATE_HEARTBEAT_S if heartbeat_s is None else heartbeat_s,
-            total=n,
             message=f"Updating {n} container(s)",
         )
     except UnraidGraphQLError as exc:
@@ -377,7 +376,7 @@ async def do_update_containers(
             raise feature_unsupported("Docker container updates", api_version=api_version) from None
         raise
     if progress is not None:
-        await progress(n, n, f"Updated {n} container(s)")
+        await progress(f"Updated {n} container(s)")
     return shape_mutation_result_list(result)
 
 
@@ -395,7 +394,7 @@ async def do_update_all_containers(
     """Pull + recreate EVERY container that has an available image update."""
     require_confirm(confirm, "update (pull + recreate) EVERY container with an available update")
     if progress is not None:
-        await progress(0, None, "Updating all containers with an available update")
+        await progress("Updating all containers with an available update")
     try:
         result = await with_heartbeat(
             client.execute(queries.UPDATE_ALL_CONTAINERS),
@@ -409,7 +408,7 @@ async def do_update_all_containers(
         raise
     shaped = shape_mutation_result_list(result)
     if progress is not None:
-        await progress(len(shaped), len(shaped), f"Updated {len(shaped)} container(s)")
+        await progress(f"Updated {len(shaped)} container(s)")
     return shaped
 
 

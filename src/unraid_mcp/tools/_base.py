@@ -20,8 +20,11 @@ if TYPE_CHECKING:  # avoid a runtime import cycle (server imports tools imports 
 
 log = get_logger(__name__)
 
-# ``(progress, total, message)`` — see :func:`progress_reporter`.
-ProgressCallback = Callable[[float, float | None, str | None], Awaitable[None]]
+# ``(message)`` — see :func:`progress_reporter`.
+ProgressCallback = Callable[[str], Awaitable[None]]
+
+# Upper bound on one progress notification send; a stalled client must not stall a tool.
+PROGRESS_TIMEOUT_S = 1.0
 
 # Hints for MCP clients. Read tools touch an external system (open world) but
 # never change it; destructive mutations are flagged so hosts can warn/gate.
@@ -142,14 +145,25 @@ def require_confirm(confirm: bool, action: str) -> None:
 
 
 def progress_reporter(ctx: Context) -> ProgressCallback:
-    """Build a progress callback bound to ``ctx`` for the plain ``fetch_*``/``do_*``
-    functions (they stay MCP-free). A no-op on the wire when the client sent no
-    progress token; any failure is swallowed (debug-logged) so progress reporting
-    can never break a tool."""
+    """Build a best-effort progress callback bound to ``ctx`` for the plain
+    ``fetch_*``/``do_*`` functions (they stay MCP-free).
 
-    async def _report(progress: float, total: float | None = None, message: str | None = None):
+    Owns one monotonic counter so ``progress`` strictly increases (MCP spec);
+    ``total`` is never sent (unknown) — counts/elapsed go in the message. Each
+    send is bounded by ``PROGRESS_TIMEOUT_S`` and any timeout/error is swallowed
+    (debug-logged), so reporting can never break or hang a tool. A no-op on the
+    wire when the client sent no progress token."""
+    counter = 0
+
+    async def _report(message: str) -> None:
+        nonlocal counter
+        counter += 1
         try:
-            await ctx.report_progress(progress, total, message)
+            await asyncio.wait_for(
+                ctx.report_progress(counter, None, message), timeout=PROGRESS_TIMEOUT_S
+            )
+        except TimeoutError:
+            log.debug("progress report timed out")
         except Exception as exc:  # noqa: BLE001 - progress must never fail the tool
             log.debug("progress report failed: %s", type(exc).__name__)
 
@@ -161,7 +175,6 @@ async def with_heartbeat(
     progress: ProgressCallback | None,
     *,
     interval_s: float,
-    total: float | None = None,
     message: str = "Still working",
 ) -> Any:
     """Await ``awaitable``; if ``progress`` is given, emit a heartbeat every
@@ -177,7 +190,7 @@ async def with_heartbeat(
             await asyncio.sleep(interval_s)
             elapsed += interval_s
             with contextlib.suppress(Exception):
-                await progress(elapsed, total, f"{message} ({elapsed:.0f}s elapsed)")
+                await progress(f"{message} ({elapsed:.0f}s elapsed)")
 
     task = asyncio.ensure_future(_beat())
     try:
