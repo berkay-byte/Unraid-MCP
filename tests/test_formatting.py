@@ -471,3 +471,16 @@ def test_shape_container_stats_cleans_id_and_passes_strings():
 def test_shape_container_stats_empty():
     assert shape_container_stats([]) == []
     assert shape_container_stats(None) == []
+
+
+def test_shape_metrics_prefers_upstream_status_over_derived_level():
+    sensor = {
+        "name": "X",
+        "current": {"value": 50.0, "unit": "CELSIUS", "status": "CRITICAL"},
+        "warning": 80.0,
+        "critical": 90.0,
+    }
+    unknown = {**sensor, "current": {"value": 95.0, "unit": "CELSIUS", "status": "UNKNOWN"}}
+    raw = {"metrics": {"temperature": {"summary": {}, "sensors": [sensor, unknown]}}}
+    levels = [s["level"] for s in shape_metrics(raw)["temperature"]["sensors"]]
+    assert levels == ["critical", "critical"]
