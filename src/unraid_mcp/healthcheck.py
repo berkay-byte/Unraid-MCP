@@ -16,7 +16,7 @@ import urllib.request
 
 from .config import BindSettings
 
-_WILDCARD_HOSTS = ("", "0.0.0.0", "::")  # noqa: S104
+_WILDCARD_HOSTS = ("", "0.0.0.0", "::")  # noqa: S104  # nosec B104 - probe targets loopback
 
 
 def health_url(settings: BindSettings) -> str:
