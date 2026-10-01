@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import weakref
 from datetime import datetime
 from typing import Any
 
@@ -418,8 +420,36 @@ def _validate_autostart_entries(entries: list[dict[str, Any]]) -> list[dict[str,
     return out
 
 
+# One lock per client serialises the whole read-merge-write so concurrent calls
+# can't both read the same state and have the last write drop the other's change.
+_AUTOSTART_LOCKS: weakref.WeakKeyDictionary[Any, asyncio.Lock] = weakref.WeakKeyDictionary()
+
+
+def _autostart_lock(client: Any) -> asyncio.Lock:
+    lock = _AUTOSTART_LOCKS.get(client)
+    if lock is None:
+        lock = _AUTOSTART_LOCKS[client] = asyncio.Lock()
+    return lock
+
+
+def _validate_order(order: list[str] | None) -> list[str] | None:
+    if order is None:
+        return None
+    if not isinstance(order, list) or not order:
+        raise ToolError("order must be a non-empty list of container ids, or omitted.")
+    for i, cid in enumerate(order):
+        if not isinstance(cid, str) or not cid.strip():
+            raise ToolError(f"order[{i}] must be a non-empty container id.")
+    dupes = sorted({c for c in order if order.count(c) > 1})
+    if dupes:
+        raise ToolError(f"order lists id(s) more than once: {dupes}.")
+    return order
+
+
 def _merge_autostart(
-    containers: list[dict[str, Any]], changes: list[dict[str, Any]]
+    containers: list[dict[str, Any]],
+    changes: list[dict[str, Any]],
+    order: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     """Merge ``changes`` into the current autostart list, preserving boot order.
 
@@ -454,6 +484,17 @@ def _merge_autostart(
                 current[idx]["wait"] = change["wait"]
         else:
             current.append(dict(change))
+    if order:
+        have = {e["id"] for e in current}
+        not_enabled = [c for c in order if c not in have]
+        if not_enabled:
+            raise ToolError(
+                f"order lists id(s) that would not be autostart-enabled: {not_enabled}. "
+                "order may only contain containers enabled after this change; nothing was changed."
+            )
+        by_id = {e["id"]: e for e in current}
+        listed = set(order)
+        current = [by_id[c] for c in order] + [e for e in current if e["id"] not in listed]
     return current
 
 
@@ -463,13 +504,18 @@ async def do_set_docker_autostart(
     persist_user_preferences: bool = False,
     confirm: bool = False,
     *,
+    order: list[str] | None = None,
     api_version: str | None = None,
 ) -> dict[str, Any]:
     """Change autostart for some containers via read-modify-write.
 
     The upstream mutation replaces the ENTIRE autostart list (unlisted containers
     lose autostart; list order is boot order), so the current list is fetched,
-    the changes merged in, and the full list sent.
+    the changes merged in, and the full list sent. The whole read-merge-write is
+    serialised per client so concurrent calls can't lose each other's updates.
+    ``order`` (optional) lists ids to boot first, in that order; it must be a
+    subset of the containers autostart-enabled after the merge, and the remaining
+    enabled containers keep their relative order after them.
     """
     ids = [e.get("id") for e in entries if isinstance(e, dict)] if isinstance(entries, list) else []
     require_confirm(
@@ -478,14 +524,16 @@ async def do_set_docker_autostart(
         "then rewritten in full; boot order and, if persist_user_preferences, UI order change)",
     )
     changes = _validate_autostart_entries(entries)
+    order = _validate_order(order)
     try:
-        state = await client.execute(queries.DOCKER_AUTOSTART_STATE)
-        containers = ((state or {}).get("docker") or {}).get("containers") or []
-        full = _merge_autostart(containers, changes)
-        result = await client.execute(
-            queries.UPDATE_DOCKER_AUTOSTART,
-            {"entries": full, "persist": persist_user_preferences},
-        )
+        async with _autostart_lock(client):
+            state = await client.execute(queries.DOCKER_AUTOSTART_STATE)
+            containers = ((state or {}).get("docker") or {}).get("containers") or []
+            full = _merge_autostart(containers, changes, order)
+            result = await client.execute(
+                queries.UPDATE_DOCKER_AUTOSTART,
+                {"entries": full, "persist": persist_user_preferences},
+            )
     except UnraidGraphQLError as exc:
         if unsupported_field_error(exc):
             raise feature_unsupported(
@@ -699,6 +747,7 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
     async def set_docker_autostart(
         ctx: Context,
         entries: list[dict[str, Any]],
+        order: list[str] | None = None,
         persist_user_preferences: bool = False,
         confirm: bool = False,
     ) -> dict[str, Any]:
@@ -708,7 +757,11 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
         locally before any request. Upstream replaces the whole autostart list, so
         this reads the current list, merges your changes (existing order kept, new
         enables appended, auto_start=false removes) and sends the full list; unknown
-        ids are rejected before the mutation. persist_user_preferences also replaces
+        ids are rejected before the mutation. Calls are serialised so concurrent edits
+        don't clobber each other. order (optional): ids to boot first, in that order;
+        must be a subset of the containers autostart-enabled after the merge (else
+        rejected before the mutation); other enabled containers keep their relative
+        order after them. persist_user_preferences also replaces
         the UI order. Returns the resulting {"ok", "autostart"} list.
         Requires confirm=true."""
         api_version = get_app_context(ctx).api_version
@@ -718,6 +771,7 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
             entries,
             persist_user_preferences,
             confirm,
+            order=order,
             api_version=api_version,
         )
 
