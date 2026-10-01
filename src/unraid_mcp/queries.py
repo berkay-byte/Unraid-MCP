@@ -116,12 +116,38 @@ query GetParityHistory {
 }
 """
 
+# Cheap-only extras for the list view (no sizes/mounts/labels — keeps it compact).
+# ``*_BASIC`` is the pre-#116 selection, used as the older-API fallback.
 LIST_CONTAINERS = """
 query ListDockerContainers {
   docker {
     containers {
       id names image state status autoStart
+      isUpdateAvailable isOrphaned webUiUrl autoStartOrder
+      hostConfig { networkMode }
       ports { ip privatePort publicPort type }
+    }
+  }
+}
+"""
+
+LIST_CONTAINERS_BASIC = """
+query ListDockerContainersBasic {
+  docker {
+    containers {
+      id names image state status autoStart
+      ports { ip privatePort publicPort type }
+    }
+  }
+}
+"""
+
+DOCKER_PORT_CONFLICTS = """
+query GetDockerPortConflicts {
+  docker {
+    portConflicts {
+      containerPorts { privatePort type containers { id name } }
+      lanPorts { lanIpPort publicPort type containers { id name } }
     }
   }
 }
@@ -145,8 +171,29 @@ query GetDockerUpdateStatuses {
 }
 """
 
+# Single-container detail: everything in the list view plus the expensive extras
+# (sizes, mounts, labels, tailscale). ``DOCKER_CONTAINER_BASIC`` is the older-API
+# fallback (same selection the tool used before #116).
 DOCKER_CONTAINER = """
 query GetDockerContainer($id: PrefixedID!) {
+  docker {
+    container(id: $id) {
+      id names image state status autoStart
+      isUpdateAvailable isRebuildReady isOrphaned webUiUrl lanIpPorts
+      iconUrl projectUrl supportUrl templatePath autoStartOrder autoStartWait
+      hostConfig { networkMode }
+      mounts labels
+      sizeRootFs sizeRw sizeLog
+      tailscaleEnabled
+      tailscaleStatus { online version updateAvailable hostname dnsName }
+      ports { ip privatePort publicPort type }
+    }
+  }
+}
+"""
+
+DOCKER_CONTAINER_BASIC = """
+query GetDockerContainerBasic($id: PrefixedID!) {
   docker {
     container(id: $id) {
       id names image state status autoStart
