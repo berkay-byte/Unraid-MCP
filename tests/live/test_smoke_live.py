@@ -366,6 +366,17 @@ MUTATION_REFUSALS: list[tuple[str, Callable[[UnraidClient], Awaitable[Any]]]] = 
     ("remove_disk_from_array", lambda c: array.do_remove_disk_from_array(c, "x", confirm=False)),
     ("remove_docker_container", lambda c: docker.do_remove_container(c, "x", confirm=False)),
     ("update_all_docker_containers", lambda c: docker.do_update_all_containers(c, confirm=False)),
+    ("refresh_docker_digests", lambda c: docker.do_refresh_docker_digests(c, confirm=False)),
+    (
+        "set_docker_autostart",
+        lambda c: docker.do_set_docker_autostart(
+            c, [{"id": "x", "auto_start": True}], confirm=False
+        ),
+    ),
+    (
+        "start_flash_backup",
+        lambda c: system.do_start_flash_backup(c, "r", "/boot", "d", confirm=False),
+    ),
 ]
 
 

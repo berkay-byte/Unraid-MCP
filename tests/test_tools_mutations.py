@@ -11,7 +11,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from unraid_mcp import queries
 from unraid_mcp.errors import UnraidGraphQLError
 from unraid_mcp.server import build_server
-from unraid_mcp.tools import array, docker, notifications, vm
+from unraid_mcp.tools import array, docker, notifications, system, vm
 
 READ_TOOLS = {"get_system_info", "get_array_status", "list_docker_containers", "get_health_summary"}
 # The complete set of mutating tools — kept exhaustive so the registration
@@ -30,6 +30,9 @@ MUTATION_TOOLS = {
     "unpause_docker_container",
     "update_docker_container",
     "update_docker_containers",
+    "refresh_docker_digests",
+    "set_docker_autostart",
+    "start_flash_backup",
     "start_vm",
     "stop_vm",
     "pause_vm",
@@ -851,3 +854,168 @@ async def test_remove_container_propagates_graphql_error(mocked_client):
     ) as (client, route):
         with pytest.raises(UnraidGraphQLError):
             await docker.do_remove_container(client, "1:abc", confirm=True)
+
+
+# ── #120: flash backup, docker digests, docker autostart ────────────────────
+
+_NO_FIELD = {"errors": [{"message": 'Cannot query field "x" on type "Docker".'}], "data": None}
+_GQL_ERR = {"errors": [{"message": "boom"}], "data": None}
+
+
+async def test_refresh_digests_requires_confirm_no_request(mocked_client):
+    async with mocked_client(httpx.Response(200, json={"data": {}})) as (client, route):
+        with pytest.raises(ToolError):
+            await docker.do_refresh_docker_digests(client, confirm=False)
+        assert route.call_count == 0
+
+
+async def test_refresh_digests_happy(mocked_client):
+    resp = httpx.Response(200, json={"data": {"refreshDockerDigests": True}})
+    async with mocked_client(resp) as (client, route):
+        assert await docker.do_refresh_docker_digests(client, confirm=True) == {"ok": True}
+        body = json.loads(route.calls.last.request.content)
+        assert body["query"] == queries.REFRESH_DOCKER_DIGESTS
+
+
+@pytest.mark.parametrize(
+    "data", [None, {}, {"refreshDockerDigests": None}, {"refreshDockerDigests": False}]
+)
+async def test_refresh_digests_false_or_null_is_error(mocked_client, data):
+    async with mocked_client(httpx.Response(200, json={"data": data})) as (client, _):
+        with pytest.raises(ToolError):
+            await docker.do_refresh_docker_digests(client, confirm=True)
+
+
+async def test_refresh_digests_graphql_error_mapped(mocked_client):
+    async with mocked_client(httpx.Response(200, json=_GQL_ERR)) as (client, _):
+        with pytest.raises(UnraidGraphQLError):
+            await docker.do_refresh_docker_digests(client, confirm=True)
+    async with mocked_client(httpx.Response(200, json=_NO_FIELD)) as (client, _):
+        with pytest.raises(ToolError, match="does not support"):
+            await docker.do_refresh_docker_digests(client, confirm=True)
+
+
+_ENTRIES = [{"id": "1:a", "auto_start": True, "wait": 5}, {"id": "1:b", "autoStart": False}]
+
+
+async def test_set_autostart_requires_confirm_no_request(mocked_client):
+    async with mocked_client(httpx.Response(200, json={"data": {}})) as (client, route):
+        with pytest.raises(ToolError):
+            await docker.do_set_docker_autostart(client, _ENTRIES, confirm=False)
+        assert route.call_count == 0
+
+
+async def test_set_autostart_happy(mocked_client):
+    resp = httpx.Response(200, json={"data": {"docker": {"updateAutostartConfiguration": True}}})
+    async with mocked_client(resp) as (client, route):
+        out = await docker.do_set_docker_autostart(client, _ENTRIES, True, confirm=True)
+        assert out == {"ok": True, "updated": 2}
+        body = json.loads(route.calls.last.request.content)
+        assert body["variables"] == {
+            "entries": [
+                {"id": "1:a", "autoStart": True, "wait": 5},
+                {"id": "1:b", "autoStart": False},
+            ],
+            "persist": True,
+        }
+
+
+@pytest.mark.parametrize(
+    "entries",
+    [
+        [],
+        ["x"],
+        [{"id": "", "auto_start": True}],
+        [{"id": "1:a"}],
+        [{"id": "1:a", "auto_start": "yes"}],
+        [{"id": "1:a", "auto_start": True, "wait": -1}],
+        [{"id": "1:a", "auto_start": True, "wait": True}],
+        [{"id": "1:a", "auto_start": True, "bogus": 1}],
+    ],
+)
+async def test_set_autostart_invalid_entries_no_request(mocked_client, entries):
+    async with mocked_client(httpx.Response(200, json={"data": {}})) as (client, route):
+        with pytest.raises(ToolError):
+            await docker.do_set_docker_autostart(client, entries, confirm=True)
+        assert route.call_count == 0
+
+
+@pytest.mark.parametrize(
+    "data", [None, {}, {"docker": None}, {"docker": {"updateAutostartConfiguration": False}}]
+)
+async def test_set_autostart_false_or_null_is_error(mocked_client, data):
+    async with mocked_client(httpx.Response(200, json={"data": data})) as (client, _):
+        with pytest.raises(ToolError):
+            await docker.do_set_docker_autostart(client, _ENTRIES, confirm=True)
+
+
+async def test_set_autostart_graphql_error_mapped(mocked_client):
+    async with mocked_client(httpx.Response(200, json=_GQL_ERR)) as (client, _):
+        with pytest.raises(UnraidGraphQLError):
+            await docker.do_set_docker_autostart(client, _ENTRIES, confirm=True)
+    async with mocked_client(httpx.Response(200, json=_NO_FIELD)) as (client, _):
+        with pytest.raises(ToolError, match="does not support"):
+            await docker.do_set_docker_autostart(client, _ENTRIES, confirm=True)
+
+
+_BACKUP = ("r", "/boot", "flash/")
+
+
+async def test_flash_backup_requires_confirm_no_request(mocked_client):
+    async with mocked_client(httpx.Response(200, json={"data": {}})) as (client, route):
+        with pytest.raises(ToolError):
+            await system.do_start_flash_backup(client, *_BACKUP, confirm=False)
+        assert route.call_count == 0
+
+
+async def test_flash_backup_happy(mocked_client):
+    resp = httpx.Response(
+        200, json={"data": {"initiateFlashBackup": {"status": "started", "jobId": "j1"}}}
+    )
+    async with mocked_client(resp) as (client, route):
+        out = await system.do_start_flash_backup(
+            client, *_BACKUP, options={"--dry-run": True}, confirm=True
+        )
+        assert out == {"status": "started", "job_id": "j1"}
+        body = json.loads(route.calls.last.request.content)
+        assert body["variables"]["input"] == {
+            "remoteName": "r",
+            "sourcePath": "/boot",
+            "destinationPath": "flash/",
+            "options": {"--dry-run": True},
+        }
+
+
+async def test_flash_backup_null_job_id(mocked_client):
+    resp = httpx.Response(
+        200, json={"data": {"initiateFlashBackup": {"status": "ok", "jobId": None}}}
+    )
+    async with mocked_client(resp) as (client, _):
+        out = await system.do_start_flash_backup(client, *_BACKUP, confirm=True)
+        assert out == {"status": "ok", "job_id": None}
+
+
+@pytest.mark.parametrize(
+    "data", [None, {}, {"initiateFlashBackup": None}, {"initiateFlashBackup": {"status": ""}}]
+)
+async def test_flash_backup_null_result_is_error(mocked_client, data):
+    async with mocked_client(httpx.Response(200, json={"data": data})) as (client, _):
+        with pytest.raises(ToolError):
+            await system.do_start_flash_backup(client, *_BACKUP, confirm=True)
+
+
+@pytest.mark.parametrize("args", [("", "/boot", "d"), ("r", " ", "d"), ("r", "/boot", "")])
+async def test_flash_backup_blank_args_no_request(mocked_client, args):
+    async with mocked_client(httpx.Response(200, json={"data": {}})) as (client, route):
+        with pytest.raises(ToolError):
+            await system.do_start_flash_backup(client, *args, confirm=True)
+        assert route.call_count == 0
+
+
+async def test_flash_backup_graphql_error_mapped(mocked_client):
+    async with mocked_client(httpx.Response(200, json=_GQL_ERR)) as (client, _):
+        with pytest.raises(UnraidGraphQLError):
+            await system.do_start_flash_backup(client, *_BACKUP, confirm=True)
+    async with mocked_client(httpx.Response(200, json=_NO_FIELD)) as (client, _):
+        with pytest.raises(ToolError, match="does not support"):
+            await system.do_start_flash_backup(client, *_BACKUP, confirm=True)

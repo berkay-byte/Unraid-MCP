@@ -353,6 +353,29 @@ mutation UpdateContainers($ids: [PrefixedID!]!) {
 }
 """
 
+# Force a fresh image-digest check (feeds `check_docker_updates`). Returns Boolean!.
+REFRESH_DOCKER_DIGESTS = """
+mutation RefreshDockerDigests {
+  refreshDockerDigests
+}
+"""
+
+# Set per-container autostart flag / start-wait. Returns Boolean!.
+UPDATE_DOCKER_AUTOSTART = """
+mutation UpdateDockerAutostart(
+  $entries: [DockerAutostartEntryInput!]!, $persist: Boolean
+) {
+  docker { updateAutostartConfiguration(entries: $entries, persistUserPreferences: $persist) }
+}
+"""
+
+# Kick off an rclone-based flash backup to a configured remote.
+INITIATE_FLASH_BACKUP = """
+mutation InitiateFlashBackup($input: InitiateFlashBackupInput!) {
+  initiateFlashBackup(input: $input) { status jobId }
+}
+"""
+
 VM_START = "mutation StartVM($id: PrefixedID!) { vm { start(id: $id) } }"
 VM_STOP = "mutation StopVM($id: PrefixedID!) { vm { stop(id: $id) } }"
 VM_PAUSE = "mutation PauseVM($id: PrefixedID!) { vm { pause(id: $id) } }"

@@ -353,6 +353,87 @@ async def do_update_containers(
     return shape_mutation_result_list(result)
 
 
+async def do_refresh_docker_digests(
+    client: UnraidClient, confirm: bool = False, *, api_version: str | None = None
+) -> dict[str, Any]:
+    """Force a fresh image-digest check so ``check_docker_updates`` is current."""
+    require_confirm(confirm, "force a Docker image digest re-check (registry network traffic)")
+    try:
+        result = await client.execute(queries.REFRESH_DOCKER_DIGESTS)
+    except UnraidGraphQLError as exc:
+        if unsupported_field_error(exc):
+            raise feature_unsupported(
+                "refreshing Docker digests", api_version=api_version
+            ) from None
+        raise
+    if (result or {}).get("refreshDockerDigests") is not True:
+        raise ToolError(
+            "The Unraid API did not confirm the Docker digest refresh (no true result)."
+        )
+    return {"ok": True}
+
+
+def _validate_autostart_entries(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Validate and normalise autostart entries into ``DockerAutostartEntryInput``."""
+    if not isinstance(entries, list) or not entries:
+        raise ToolError(
+            "entries must be a non-empty list of {id, auto_start, wait?} objects "
+            "(ids from list_docker_containers)."
+        )
+    out: list[dict[str, Any]] = []
+    for i, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            raise ToolError(f"entries[{i}] must be an object {{id, auto_start, wait?}}.")
+        unknown = set(entry) - {"id", "auto_start", "autoStart", "wait"}
+        if unknown:
+            raise ToolError(f"entries[{i}] has unknown keys {sorted(unknown)}.")
+        cid = entry.get("id")
+        if not isinstance(cid, str) or not cid.strip():
+            raise ToolError(f"entries[{i}].id must be a non-empty container id.")
+        auto = entry["auto_start"] if "auto_start" in entry else entry.get("autoStart")
+        if not isinstance(auto, bool):
+            raise ToolError(f"entries[{i}].auto_start must be a boolean.")
+        item: dict[str, Any] = {"id": cid, "autoStart": auto}
+        wait = entry.get("wait")
+        if wait is not None:
+            if isinstance(wait, bool) or not isinstance(wait, int) or wait < 0:
+                raise ToolError(f"entries[{i}].wait must be a non-negative integer (seconds).")
+            item["wait"] = wait
+        out.append(item)
+    return out
+
+
+async def do_set_docker_autostart(
+    client: UnraidClient,
+    entries: list[dict[str, Any]],
+    persist_user_preferences: bool = False,
+    confirm: bool = False,
+    *,
+    api_version: str | None = None,
+) -> dict[str, Any]:
+    """Set autostart flag/wait for a batch of containers."""
+    require_confirm(
+        confirm,
+        f"change Docker autostart configuration for {len(entries or [])} container(s) "
+        "(affects which containers start at boot)",
+    )
+    payload = _validate_autostart_entries(entries)
+    try:
+        result = await client.execute(
+            queries.UPDATE_DOCKER_AUTOSTART,
+            {"entries": payload, "persist": persist_user_preferences},
+        )
+    except UnraidGraphQLError as exc:
+        if unsupported_field_error(exc):
+            raise feature_unsupported(
+                "Docker autostart configuration", api_version=api_version
+            ) from None
+        raise
+    if ((result or {}).get("docker") or {}).get("updateAutostartConfiguration") is not True:
+        raise ToolError("The Unraid API did not confirm the autostart update (no true result).")
+    return {"ok": True, "updated": len(payload)}
+
+
 # ── Dangerous-tier logic ────────────────────────────────────────────────────
 
 
@@ -459,8 +540,8 @@ def register(mcp: MCPServer, settings: Settings) -> None:
     async def check_docker_updates(ctx: Context) -> list[dict[str, Any]]:
         """Per-container Docker image update status (name, update_status).
         Reads cached image-update digests already computed by the Unraid API;
-        it does not trigger a fresh digest check (that's the
-        `refreshDockerDigests` mutation, out of scope for this tool)."""
+        it does not trigger a fresh digest check (call
+        `refresh_docker_digests` first when mutations are enabled)."""
         api_version = get_app_context(ctx).api_version
         return await guarded(ctx, fetch_docker_updates, api_version=api_version)
 
@@ -540,6 +621,37 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
         api_version = get_app_context(ctx).api_version
         return await guarded(
             ctx, do_update_containers, container_ids, confirm, api_version=api_version
+        )
+
+    @mcp.tool(annotations=MUTATING)
+    async def refresh_docker_digests(ctx: Context, confirm: bool = False) -> dict[str, Any]:
+        """Force a fresh Docker image digest check against registries, so a following
+        check_docker_updates reflects current availability. Idempotent; changes no
+        container. Requires confirm=true."""
+        api_version = get_app_context(ctx).api_version
+        return await guarded(ctx, do_refresh_docker_digests, confirm, api_version=api_version)
+
+    @mcp.tool(annotations=MUTATING)
+    async def set_docker_autostart(
+        ctx: Context,
+        entries: list[dict[str, Any]],
+        persist_user_preferences: bool = False,
+        confirm: bool = False,
+    ) -> dict[str, Any]:
+        """Set Docker container autostart config. entries: non-empty list of
+        {"id": <container id from list_docker_containers>, "auto_start": bool,
+        "wait": optional seconds to wait after starting it}. Entries are validated
+        locally before any request. persist_user_preferences also saves the order in
+        Unraid's user preferences. Changes which containers start at boot.
+        Requires confirm=true."""
+        api_version = get_app_context(ctx).api_version
+        return await guarded(
+            ctx,
+            do_set_docker_autostart,
+            entries,
+            persist_user_preferences,
+            confirm,
+            api_version=api_version,
         )
 
 
