@@ -62,10 +62,10 @@ A typical stdio client config:
 |------|------|-----------|
 | `get_health_summary` | – | One-call triage: array state, capacity, unhealthy disks, parity status, UPS, unread alert counts. **Start here.** |
 | `get_system_info` | – | OS/kernel, CPU, memory, motherboard, Unraid + API versions, uptime, and (when supported) flash boot-device identity. |
-| `get_system_metrics` | – | Live utilization: total/per-core CPU %, memory/swap usage, temperatures. Requires API 7.2+; older builds get a friendly error. |
+| `get_system_metrics` | – | Live utilization: total/per-core CPU %, memory/swap usage, temperatures (per-sensor `warning`/`critical` thresholds, a `level` flag, and a `hottest` summary on newer APIs). Requires API 7.2+; older builds get a friendly error. |
 | `get_services` | – | Health of the Unraid services stack (API, dynamix, etc.): name, online, uptime, version. |
 | `get_system_time` | – | Server time, timezone, and NTP config — correlate log timestamps and spot NTP misconfig. Requires API 7.1+. |
-| `get_array_status` | – | Array state, total/used/free capacity, and every data/parity/cache disk with `health`, temp, and I/O counters. |
+| `get_array_status` | – | Array state, total/used/free capacity, and every data/parity/cache disk with `health`, temp, and I/O counters, plus `spinning`/`format`/`transport`/`exportable`, and `boot_devices` (all internal-boot members; `null` on APIs without it, `boot` kept). |
 | `list_disks` | – | Physical disks: model, size, interface, SMART status, temperature, spin state. |
 | `get_disk` | `disk_id` | Full detail for one physical disk (partitions, firmware, SMART). Get `disk_id` from `list_disks`. |
 | `get_parity_status` | – | Live parity-check progress/speed/errors. |
@@ -80,7 +80,7 @@ A typical stdio client config:
 | `list_shares` | – | User shares with free/used/total sizes, allocator, cache mode, and (when set) include/exclude, split level, floor, and encryption status. |
 | `get_notifications_overview` | – | Unread/archive counts by severity. |
 | `list_notifications` | `notification_type="UNREAD"`, `importance=None`, `limit=25`, `offset=0` | List notifications. `notification_type` ∈ `UNREAD`/`ARCHIVE`; `importance` ∈ `INFO`/`WARNING`/`ALERT`. |
-| `get_ups_status` | – | UPS battery/load/runtime. |
+| `get_ups_status` | – | UPS battery/load/runtime; `power.nominalPower`/`currentPower` in watts on newer APIs. |
 | `list_network_interfaces` | – | NICs with IPs, speed, state. |
 | `get_connect_status` | – | Registration/license + remote-access status. |
 | `whoami` | – | The authenticated API user and its roles (use to confirm the key's scope). |

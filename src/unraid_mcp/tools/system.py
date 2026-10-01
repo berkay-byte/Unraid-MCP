@@ -19,6 +19,7 @@ from ..formatting import (
 )
 from ._base import (
     READ_ONLY,
+    execute_with_fallback,
     feature_unsupported,
     get_app_context,
     guarded,
@@ -53,7 +54,11 @@ async def fetch_system_time(
 
 async def fetch_metrics(client: UnraidClient, *, api_version: str | None = None) -> dict[str, Any]:
     try:
-        return shape_metrics(await client.execute(queries.SYSTEM_METRICS))
+        return shape_metrics(
+            await execute_with_fallback(
+                client, queries.SYSTEM_METRICS, queries.SYSTEM_METRICS_LEGACY
+            )
+        )
     except UnraidGraphQLError as exc:
         if unsupported_field_error(exc):
             raise feature_unsupported(

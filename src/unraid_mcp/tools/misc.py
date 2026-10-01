@@ -13,9 +13,8 @@ from mcp.server.mcpserver.exceptions import ToolError
 from .. import queries
 from ..client import UnraidClient
 from ..config import Settings
-from ..errors import UnraidGraphQLError
+from ..errors import UnraidError, UnraidGraphQLError
 from ..formatting import (
-    shape_array_status,
     shape_connect_status,
     shape_installed_unraid_plugins,
     shape_log_file,
@@ -29,12 +28,14 @@ from ..formatting import (
 )
 from ._base import (
     READ_ONLY,
+    execute_with_fallback,
     feature_unsupported,
     get_app_context,
     guarded,
     safe_query,
     unsupported_field_error,
 )
+from .array import fetch_array_status
 
 # Server-enforced cap on how many log lines a single read_log_file call may
 # request; kept in sync with the docstring below.
@@ -68,7 +69,9 @@ def _ensure_read_only(query: str) -> None:
 
 
 async def fetch_ups(client: UnraidClient) -> list[dict[str, Any]]:
-    return shape_ups(await client.execute(queries.UPS_DEVICES))
+    return shape_ups(
+        await execute_with_fallback(client, queries.UPS_DEVICES, queries.UPS_DEVICES_LEGACY)
+    )
 
 
 async def fetch_network_interfaces(client: UnraidClient) -> list[dict[str, Any]]:
@@ -160,8 +163,11 @@ async def fetch_plugins(
 
 
 async def fetch_health(client: UnraidClient) -> dict[str, Any]:
-    array = shape_array_status(await client.execute(queries.ARRAY_STATUS))
-    ups = await safe_query(client, queries.UPS_DEVICES, shape_ups, [])
+    array = await fetch_array_status(client)
+    try:
+        ups = await fetch_ups(client)
+    except UnraidError:
+        ups = []
     overview = await safe_query(
         client, queries.NOTIFICATIONS_OVERVIEW, shape_notifications_overview, {}
     )
