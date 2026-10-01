@@ -13,7 +13,7 @@ from mcp.server.mcpserver.exceptions import ToolError
 from .. import queries
 from ..client import UnraidClient
 from ..config import Settings
-from ..errors import UnraidGraphQLError
+from ..errors import UnraidAuthError, UnraidGraphQLError
 from ..formatting import (
     shape_array_status,
     shape_connect_status,
@@ -32,7 +32,9 @@ from ._base import (
     feature_unsupported,
     get_app_context,
     guarded,
+    is_permission_error,
     safe_query,
+    safe_query_with_status,
     unsupported_field_error,
 )
 
@@ -160,12 +162,43 @@ async def fetch_plugins(
 
 
 async def fetch_health(client: UnraidClient) -> dict[str, Any]:
-    array = shape_array_status(await client.execute(queries.ARRAY_STATUS))
-    ups = await safe_query(client, queries.UPS_DEVICES, shape_ups, [])
-    overview = await safe_query(
-        client, queries.NOTIFICATIONS_OVERVIEW, shape_notifications_overview, {}
+    array, array_ok = await safe_query_with_status(
+        client, queries.ARRAY_STATUS, shape_array_status, {}, required_field="array"
     )
-    return summarize_health(array, ups, overview)
+    ups: list[dict[str, Any]] = []
+    ups_ok = False
+    ups_eligible = False  # failed with a plain (non-permission, supported) GraphQL error
+    try:
+        ups_data, ups_errors = await client.execute_with_errors(queries.UPS_DEVICES)
+        ups, ups_ok = shape_ups(ups_data), not ups_errors
+    except UnraidGraphQLError as exc:
+        ups_eligible = not is_permission_error(exc) and not unsupported_field_error(exc)
+    except UnraidAuthError:
+        pass
+    overview, notifications_ok = await safe_query_with_status(
+        client,
+        queries.NOTIFICATIONS_OVERVIEW,
+        shape_notifications_overview,
+        {},
+        tolerate_auth=True,
+    )
+    checks = {
+        name: "ok" if ok else "failed"
+        for name, ok in (("array", array_ok), ("ups", ups_ok), ("notifications", notifications_ok))
+    }
+    if ups_eligible:
+        config, config_ok = await safe_query_with_status(
+            client,
+            queries.UPS_CONFIGURATION,
+            lambda data: data.get("upsConfiguration") or {},
+            {},
+            required_field="upsConfiguration",
+            tolerate_auth=True,
+        )
+        # Real boxes with no UPS report service=null, not "disable".
+        if config_ok and (config.get("service") or "").lower() != "enable":
+            checks["ups"] = "not_configured"
+    return summarize_health(array, ups, overview, checks)
 
 
 async def do_raw_query(
@@ -208,7 +241,20 @@ def register(mcp: MCPServer, settings: Settings) -> None:
     @mcp.tool(annotations=READ_ONLY)
     async def get_health_summary(ctx: Context) -> dict[str, Any]:
         """Compact health roll-up for triage: array state, capacity, any unhealthy disks,
-        parity-check status, UPS state, and unread notification counts."""
+        parity-check status, UPS state, and unread notification counts.
+
+        overall is critical for red/failed/missing disks, UPS LOWBATT, or ONBATT with
+        charge <20% or runtime <300 seconds; attention for other unhealthy disks,
+        unread alerts/warnings, UPS on battery, or parity errors. Failed queries
+        yield degraded when no critical/attention signal exists; otherwise ok.
+        reasons explains each signal; checks marks array/ups/notifications queries
+        as ok or failed; ups is not_configured only when its query fails with a
+        non-permission, supported GraphQL error and the UPS service is not enabled.
+        HTTP 403 on the ups/notifications sub-checks marks them failed; connection errors
+        propagate. Partial GraphQL errors mark a check failed while
+        preserving usable data. Auth/connection/configuration errors propagate.
+        Array state is informational. Also at unraid://health.
+        """
         return await guarded(ctx, fetch_health)
 
     @mcp.tool(annotations=READ_ONLY)

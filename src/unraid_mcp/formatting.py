@@ -64,14 +64,13 @@ def _size_from_bytes(value: Any) -> dict[str, Any]:
 
 
 def array_disk_health(status: str | None, warning: Any = 0, critical: Any = 0) -> str:
-    """Map an ``ArrayDiskStatus`` (+ warning/critical flags) to a coarse health word."""
+    """Map disk status to health. Space thresholds are not alarm flags.
+
+    The warning/critical arguments are retained for compatibility and ignored.
+    """
     if not status:
         return "unknown"
     if status == "DISK_OK":
-        if critical:
-            return "critical"
-        if warning:
-            return "warning"
         return "healthy"
     if status in _FAILED_STATUSES:
         return "failed"
@@ -580,6 +579,7 @@ def summarize_health(
     array_out: dict[str, Any],
     ups_list: list[dict[str, Any]],
     notifications_overview: dict[str, Any],
+    checks: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     """Compose a compact, triage-friendly health roll-up from the shaped parts."""
     disks = [
@@ -593,11 +593,68 @@ def summarize_health(
         # from the disk count entirely so it reflects actual installed devices.
         if d and d.get("health") != "empty"
     ]
-    unhealthy = [d for d in disks if d and d.get("health") not in ("healthy", None)]
+    unhealthy = [
+        d
+        for d in disks
+        if d.get("health") not in ("healthy", None)
+        or (d.get("color") or "").lower().startswith(("red", "yellow"))
+    ]
     unread = (notifications_overview or {}).get("unread") or {}
-    has_attention = bool(unhealthy or unread.get("alert") or unread.get("warning"))
+    checks = (
+        checks if checks is not None else dict.fromkeys(("array", "ups", "notifications"), "ok")
+    )
+    reasons = []
+    critical = False
+    for disk in unhealthy:
+        red = (disk.get("color") or "").lower().startswith("red")
+        critical |= red or disk.get("health") in ("red", "failed", "critical", "missing")
+        yellow = (disk.get("color") or "").lower().startswith("yellow")
+        health = "red" if red else "yellow" if yellow else disk.get("health")
+        reasons.append(f"Disk {disk.get('name') or 'unnamed'} is {health}")
+    for severity in ("alert", "warning"):
+        if unread.get(severity):
+            reasons.append(f"Unread {severity} notifications: {unread[severity]}")
+    parity = array_out.get("parity_check") or {}
+    if (parity.get("errors") or 0) > 0:
+        reasons.append(f"Parity check reported {parity['errors']} errors")
+    for ups in ups_list or []:
+        status = (ups.get("status") or "").upper().split()
+        on_battery = "ONBATT" in status or status == ["ON", "BATTERY"]
+        low_battery = "LOWBATT" in status or status == ["LOW", "BATTERY"]
+        if not on_battery and not low_battery:
+            continue
+        name = ups.get("name") or "unnamed"
+        if low_battery:
+            critical = True
+            reasons.append(f"UPS {name} reports low battery")
+        if not on_battery:
+            continue
+        reasons.append(f"UPS {name} is on battery")
+        battery = ups.get("battery") or {}
+        charge = battery.get("chargeLevel")
+        runtime = battery.get("estimatedRuntime")
+        if charge is not None and charge < 20:
+            critical = True
+            reasons.append(f"UPS {name} battery charge is {charge}% (<20%)")
+        if runtime is not None and runtime < 300:
+            critical = True
+            reasons.append(f"UPS {name} runtime is {runtime} seconds (<5 minutes)")
+    attention = bool(reasons)
+    failed_checks = [name for name, status in checks.items() if status == "failed"]
+    reasons.extend(f"{name.capitalize()} check failed or is unsupported" for name in failed_checks)
+    overall = (
+        "critical"
+        if critical
+        else "attention"
+        if attention
+        else "degraded"
+        if failed_checks
+        else "ok"
+    )
     return {
-        "overall": "attention" if has_attention else "ok",
+        "overall": overall,
+        "reasons": reasons,
+        "checks": checks,
         "array_state": array_out.get("state"),
         "capacity": array_out.get("capacity"),
         "disk_count": len(disks),
