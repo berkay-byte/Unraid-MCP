@@ -40,14 +40,27 @@ class UnraidClient:
         http_client: httpx.AsyncClient,
         *,
         host_label: str | None = None,
+        long_timeout: float = 600.0,
     ) -> None:
         self._url = url
         self._key = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
         self._http = http_client
         self._host = host_label or urlparse(url).netloc or url
+        # Timeout (seconds) tools pass to ``execute`` for slow, synchronous mutations.
+        self.long_timeout = long_timeout
 
-    async def execute(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def execute(
+        self,
+        query: str,
+        variables: dict[str, Any] | None = None,
+        *,
+        timeout: float | httpx.Timeout | None = None,
+    ) -> dict[str, Any]:
         """Run a GraphQL operation and return its ``data`` object.
+
+        ``timeout`` overrides the shared client's timeout for this request only
+        (``None`` keeps the default). Pass it for long-running mutations; a
+        timeout then reports that the operation may still be running.
 
         Raises an :class:`~unraid_mcp.errors.UnraidError` subclass on failure.
         The API key is never included in any error message.
@@ -57,8 +70,15 @@ class UnraidClient:
                 self._url,
                 json={"query": query, "variables": variables or {}},
                 headers={"x-api-key": self._key, "content-type": "application/json"},
+                timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout,
             )
         except httpx.TimeoutException as exc:
+            if timeout is not None:
+                raise UnraidConnectionError(
+                    f"Timed out waiting for Unraid at {self._host} to finish a long-running "
+                    "operation. It may still be running on the server: check its status "
+                    "(e.g. container/array state) before retrying."
+                ) from exc
             raise UnraidConnectionError(
                 f"Timed out talking to Unraid at {self._host}. Is the server up and reachable?"
             ) from exc

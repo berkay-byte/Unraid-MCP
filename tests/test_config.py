@@ -28,6 +28,7 @@ def clean_env(monkeypatch):
         "UNRAID_MCP_ALLOW_DANGEROUS",
         "UNRAID_MCP_ALLOW_RAW_QUERY",
         "UNRAID_MCP_TIMEOUT",
+        "UNRAID_MCP_LONG_TIMEOUT",
         "UNRAID_MCP_LOG_LEVEL",
         "UNRAID_MCP_ALLOWED_HOSTS",
         "UNRAID_MCP_ALLOWED_ORIGINS",
@@ -68,6 +69,7 @@ def test_defaults(clean_env):
     assert s.allow_dangerous is False
     assert s.allow_raw_query is False
     assert s.timeout == 30.0
+    assert s.long_timeout == 600.0
     assert s.log_level == "INFO"
     assert s.ca_bundle is None
 

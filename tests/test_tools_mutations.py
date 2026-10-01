@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 
 import httpx
@@ -9,7 +10,7 @@ import pytest
 from mcp.server.mcpserver.exceptions import ToolError
 
 from unraid_mcp import queries
-from unraid_mcp.errors import UnraidGraphQLError
+from unraid_mcp.errors import UnraidConnectionError, UnraidGraphQLError
 from unraid_mcp.server import build_server
 from unraid_mcp.tools import array, docker, notifications, vm
 
@@ -851,3 +852,45 @@ async def test_remove_container_propagates_graphql_error(mocked_client):
     ) as (client, route):
         with pytest.raises(UnraidGraphQLError):
             await docker.do_remove_container(client, "1:abc", confirm=True)
+
+
+# ── long-running mutations use the long per-call timeout ───────────────────
+
+
+def _read_timeout(route) -> float:
+    return route.calls.last.request.extensions["timeout"]["read"]
+
+
+async def test_docker_updates_use_long_timeout(mocked_client):
+    ok = httpx.Response(200, json={"data": {"docker": {}}})
+    for call in (
+        lambda c: docker.do_update_container(c, "1:abc", confirm=True),
+        lambda c: docker.do_update_containers(c, ["1:abc"], confirm=True),
+        lambda c: docker.do_update_all_containers(c, confirm=True),
+    ):
+        async with mocked_client(ok) as (client, route):
+            with contextlib.suppress(Exception):  # shaping of the empty body is irrelevant
+                await call(client)
+            assert route.call_count == 1
+            assert _read_timeout(route) == client.long_timeout == 600.0
+
+
+async def test_array_start_stop_use_long_timeout(mocked_client):
+    ok = httpx.Response(200, json={"data": {"array": {"setState": {"state": "STARTED"}}}})
+    for call in (array.do_start_array, array.do_stop_array):
+        async with mocked_client(ok) as (client, route):
+            await call(client, confirm=True)
+            assert _read_timeout(route) == 600.0
+
+
+async def test_docker_update_timeout_says_may_still_be_running(mocked_client):
+    async with mocked_client([httpx.ReadTimeout("slow")]) as (client, _route):
+        with pytest.raises(UnraidConnectionError, match="may still be running"):
+            await docker.do_update_container(client, "1:abc", confirm=True)
+
+
+async def test_quick_mutation_keeps_default_timeout(mocked_client):
+    ok = httpx.Response(200, json={"data": {"docker": {"start": {"id": "1:abc"}}}})
+    async with mocked_client(ok) as (client, route):
+        await docker.do_start_container(client, "1:abc", confirm=True)
+        assert _read_timeout(route) == 5.0  # the shared httpx client default

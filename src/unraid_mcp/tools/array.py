@@ -65,12 +65,16 @@ async def fetch_disk(client: UnraidClient, disk_id: str) -> dict[str, Any]:
 
 async def do_start_array(client: UnraidClient, confirm: bool) -> dict[str, Any]:
     require_confirm(confirm, "start the Unraid array")
-    return shape_mutation_result(await client.execute(queries.START_ARRAY))
+    return shape_mutation_result(
+        await client.execute(queries.START_ARRAY, timeout=client.long_timeout)
+    )
 
 
 async def do_stop_array(client: UnraidClient, confirm: bool) -> dict[str, Any]:
     require_confirm(confirm, "stop the Unraid array (this unmounts all disks)")
-    return shape_mutation_result(await client.execute(queries.STOP_ARRAY))
+    return shape_mutation_result(
+        await client.execute(queries.STOP_ARRAY, timeout=client.long_timeout)
+    )
 
 
 async def do_start_parity(client: UnraidClient, correct: bool, confirm: bool) -> dict[str, Any]:

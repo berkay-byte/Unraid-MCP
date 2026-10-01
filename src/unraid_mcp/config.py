@@ -74,6 +74,9 @@ class Settings(BaseSettings):
 
     # ── Misc ───────────────────────────────────────────────────────────
     timeout: float = Field(default=30.0, validation_alias="UNRAID_MCP_TIMEOUT")
+    # Per-call HTTP timeout for mutations that block on slow work (image pulls,
+    # array start/stop). Reads and quick mutations keep ``timeout``.
+    long_timeout: float = Field(default=600.0, validation_alias="UNRAID_MCP_LONG_TIMEOUT")
     log_level: str = Field(default="INFO", validation_alias="UNRAID_MCP_LOG_LEVEL")
 
     @field_validator("api_url")
