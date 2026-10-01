@@ -487,13 +487,14 @@ def register(mcp: MCPServer, settings: Settings) -> None:
         container reported — see `note` and retry for a full snapshot. Requires
         an Unraid API build that supports the subscription."""
         app = get_app_context(ctx)
-        return await guarded(
-            ctx,
-            fetch_container_stats,
-            settings=app.settings,
-            api_version=app.api_version,
-            progress=progress_reporter(ctx),
-        )
+        async with progress_reporter(ctx) as progress:
+            return await guarded(
+                ctx,
+                fetch_container_stats,
+                settings=app.settings,
+                api_version=app.api_version,
+                progress=progress,
+            )
 
     @mcp.tool(annotations=READ_ONLY)
     async def check_docker_updates(ctx: Context) -> list[dict[str, Any]]:
@@ -578,14 +579,15 @@ def register_mutations(mcp: MCPServer, settings: Settings) -> None:
         must be non-empty and hold at most 20 ids per call. Requires
         confirm=true."""
         api_version = get_app_context(ctx).api_version
-        return await guarded(
-            ctx,
-            do_update_containers,
-            container_ids,
-            confirm,
-            api_version=api_version,
-            progress=progress_reporter(ctx),
-        )
+        async with progress_reporter(ctx) as progress:
+            return await guarded(
+                ctx,
+                do_update_containers,
+                container_ids,
+                confirm,
+                api_version=api_version,
+                progress=progress,
+            )
 
 
 def register_dangerous(mcp: MCPServer, settings: Settings) -> None:
@@ -615,10 +617,11 @@ def register_dangerous(mcp: MCPServer, settings: Settings) -> None:
         here; use update_docker_container / update_docker_containers to update a
         specific target instead. Requires confirm=true."""
         api_version = get_app_context(ctx).api_version
-        return await guarded(
-            ctx,
-            do_update_all_containers,
-            confirm,
-            api_version=api_version,
-            progress=progress_reporter(ctx),
-        )
+        async with progress_reporter(ctx) as progress:
+            return await guarded(
+                ctx,
+                do_update_all_containers,
+                confirm,
+                api_version=api_version,
+                progress=progress,
+            )

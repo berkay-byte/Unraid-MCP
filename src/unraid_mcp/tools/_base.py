@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-from collections.abc import Awaitable, Callable
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import TYPE_CHECKING, Any
 
 from mcp.server.mcpserver import Context
@@ -25,6 +25,7 @@ ProgressCallback = Callable[[str], Awaitable[None]]
 
 # Upper bound on one progress notification send; a stalled client must not stall a tool.
 PROGRESS_TIMEOUT_S = 1.0
+PROGRESS_QUEUE_MAX = 16
 
 # Hints for MCP clients. Read tools touch an external system (open world) but
 # never change it; destructive mutations are flagged so hosts can warn/gate.
@@ -144,30 +145,56 @@ def require_confirm(confirm: bool, action: str) -> None:
         )
 
 
-def progress_reporter(ctx: Context) -> ProgressCallback:
-    """Build a best-effort progress callback bound to ``ctx`` for the plain
-    ``fetch_*``/``do_*`` functions (they stay MCP-free).
+@contextlib.asynccontextmanager
+async def progress_reporter(ctx: Context) -> AsyncIterator[ProgressCallback]:
+    """Yield a best-effort, NON-BLOCKING progress callback bound to ``ctx`` for
+    the plain ``fetch_*``/``do_*`` functions (they stay MCP-free).
 
-    Owns one monotonic counter so ``progress`` strictly increases (MCP spec);
-    ``total`` is never sent (unknown) — counts/elapsed go in the message. Each
-    send is bounded by ``PROGRESS_TIMEOUT_S`` and any timeout/error is swallowed
-    (debug-logged), so reporting can never break or hang a tool. A no-op on the
-    wire when the client sent no progress token."""
-    counter = 0
+    The callback only enqueues (bounded queue, oldest dropped when full) and never
+    awaits a send, so a stalled client cannot eat a tool's deadline. A background
+    worker performs the sends, each bounded by ``PROGRESS_TIMEOUT_S`` with errors
+    swallowed (debug-logged). The worker owns one monotonic counter so ``progress``
+    strictly increases (MCP spec); ``total`` is never sent (unknown) — counts and
+    elapsed go in the message. On exit, pending messages get one bounded flush
+    attempt and the worker is cancelled (no leaked tasks). A no-op on the wire
+    when the client sent no progress token."""
+    queue: asyncio.Queue[str] = asyncio.Queue(maxsize=PROGRESS_QUEUE_MAX)
+
+    async def _worker() -> None:
+        counter = 0
+        while True:
+            message = await queue.get()
+            counter += 1
+            try:
+                await asyncio.wait_for(
+                    ctx.report_progress(counter, None, message), timeout=PROGRESS_TIMEOUT_S
+                )
+            except TimeoutError:
+                log.debug("progress report timed out")
+            except Exception as exc:  # noqa: BLE001 - progress must never fail the tool
+                log.debug("progress report failed: %s", type(exc).__name__)
+            finally:
+                queue.task_done()
 
     async def _report(message: str) -> None:
-        nonlocal counter
-        counter += 1
-        try:
-            await asyncio.wait_for(
-                ctx.report_progress(counter, None, message), timeout=PROGRESS_TIMEOUT_S
-            )
-        except TimeoutError:
-            log.debug("progress report timed out")
-        except Exception as exc:  # noqa: BLE001 - progress must never fail the tool
-            log.debug("progress report failed: %s", type(exc).__name__)
+        while True:
+            try:
+                queue.put_nowait(message)
+                return
+            except asyncio.QueueFull:
+                with contextlib.suppress(asyncio.QueueEmpty):
+                    queue.get_nowait()
+                    queue.task_done()  # dropped oldest
 
-    return _report
+    task = asyncio.ensure_future(_worker())
+    try:
+        yield _report
+    finally:
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(queue.join(), timeout=PROGRESS_TIMEOUT_S)
+        task.cancel()
+        with contextlib.suppress(asyncio.CancelledError):
+            await task
 
 
 async def with_heartbeat(

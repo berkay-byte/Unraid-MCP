@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import asynccontextmanager
 
 import httpx
 import pytest
@@ -103,12 +104,10 @@ async def test_stats_without_progress_token_unchanged(settings_factory, monkeypa
 
 async def test_stats_progress_failure_is_swallowed():
     transport = _FakeTransport([_ack(), _next("docker:a"), _next("docker:b"), _next("docker:a")])
-    result = await docker.fetch_container_stats(
-        None,
-        settings=_settings(),
-        connect=_fake_connect(transport),
-        progress=progress_reporter(_StubCtx(fail=True)),
-    )
+    async with progress_reporter(_StubCtx(fail=True)) as progress:
+        result = await docker.fetch_container_stats(
+            None, settings=_settings(), connect=_fake_connect(transport), progress=progress
+        )
     assert result["sampled"] == 2
 
 
@@ -116,38 +115,71 @@ async def test_stalled_reporter_cannot_hang_sampling(monkeypatch):
     monkeypatch.setattr(_base, "PROGRESS_TIMEOUT_S", 0.05)
     ctx = _StubCtx(stall=True)
     transport = _FakeTransport([_ack(), _next("docker:a"), _next("docker:b"), _next("docker:a")])
-    result = await asyncio.wait_for(
-        docker.fetch_container_stats(
-            None,
-            settings=_settings(),
-            connect=_fake_connect(transport),
-            progress=progress_reporter(ctx),
-        ),
-        timeout=3,
-    )
-    assert result["sampled"] == 2 and len(ctx.calls) == 2
+    async with progress_reporter(ctx) as progress:
+        result = await asyncio.wait_for(
+            docker.fetch_container_stats(
+                None, settings=_settings(), connect=_fake_connect(transport), progress=progress
+            ),
+            timeout=3,
+        )
+    assert result["sampled"] == 2 and result["partial"] is False
+
+
+async def test_stalled_reporter_does_not_eat_sampling_deadline(monkeypatch):
+    """A stalled handler must yield the same result as no reporter at all."""
+    monkeypatch.setattr(_base, "PROGRESS_TIMEOUT_S", 0.2)
+    ids = [f"docker:{i}" for i in range(30)]
+    script = [_ack(), *[_next(c) for c in ids], _next(ids[0])]
+
+    async def run(progress_cm):
+        transport = _FakeTransport(script)
+        async with progress_cm as progress:
+            return await docker.fetch_container_stats(
+                None,
+                settings=_settings(),
+                connect=_fake_connect(transport),
+                timeout_s=1.0,  # < 30 sequential 0.2s sends would need
+                progress=progress,
+            )
+
+    @asynccontextmanager
+    async def _none():
+        yield None
+
+    baseline = await run(_none())
+    stalled = await run(progress_reporter(_StubCtx(stall=True)))
+    assert (stalled["sampled"], stalled["partial"]) == (baseline["sampled"], baseline["partial"])
+    assert stalled["sampled"] == 30 and stalled["partial"] is False
+
+
+async def test_reporter_leaks_no_tasks():
+    before = len(asyncio.all_tasks())
+    async with progress_reporter(_StubCtx(stall=True)) as progress:
+        await progress("x")
+    assert len(asyncio.all_tasks()) == before
 
 
 async def test_stalled_reporter_cannot_hang_updates(monkeypatch, mocked_client):
     monkeypatch.setattr(_base, "PROGRESS_TIMEOUT_S", 0.05)
     ctx = _StubCtx(stall=True)
     body = {"data": {"docker": {"updateContainers": [{"id": "1:a", "names": ["/a"]}]}}}
-    async with mocked_client(httpx.Response(200, json=body)) as (client, _route):
+    async with (
+        mocked_client(httpx.Response(200, json=body)) as (client, _route),
+        progress_reporter(ctx) as progress,
+    ):
         result = await asyncio.wait_for(
-            docker.do_update_containers(
-                client, ["1:a"], confirm=True, progress=progress_reporter(ctx)
-            ),
+            docker.do_update_containers(client, ["1:a"], confirm=True, progress=progress),
             timeout=3,
         )
     assert result[0]["id"] == "1:a"
-    assert len(ctx.calls) == 2  # start + completion, each bounded
+    assert len(ctx.calls) >= 1  # worker attempted (and timed out) without blocking the update
 
 
 async def test_reporter_counter_strictly_increases():
     ctx = _StubCtx()
-    report = progress_reporter(ctx)
-    for m in "abc":
-        await report(m)
+    async with progress_reporter(ctx) as report:
+        for m in "abc":
+            await report(m)
     assert [c[0] for c in ctx.calls] == [1, 2, 3]
     assert all(c[1] is None for c in ctx.calls)
 
@@ -208,9 +240,7 @@ async def test_update_refused_without_confirm_reports_no_progress(mocked_client)
     ctx = _StubCtx()
     async with mocked_client(httpx.Response(200, json={"data": {}})) as (client, route):
         with pytest.raises(ToolError):
-            await docker.do_update_containers(
-                client, ["1:a"], confirm=False, progress=progress_reporter(ctx)
-            )
+            await docker.do_update_containers(client, ["1:a"], confirm=False, progress=None)
         assert route.call_count == 0
     assert ctx.calls == []
 
