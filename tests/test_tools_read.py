@@ -471,20 +471,27 @@ async def test_container_null_native_result_falls_back(mocked_client):
     assert r.call_count == 2
 
 
-async def test_container_name_lookup_stays_list_based(mocked_client):
-    """A plain name (no colon) never triggers the native id query."""
-    data = {
-        "docker": {
-            "containers": [
-                {"id": "1:abcdef", "names": ["/plex"], "state": "RUNNING"},
-            ]
-        }
-    }
-    async with mocked_client(_resp(data)) as (c, r):
+async def test_container_name_lookup_upgrades_to_detail(mocked_client):
+    """A name resolves via the list, then the native detail query by id, so name
+    and id lookups return identical output."""
+    lst = {"docker": {"containers": [{"id": "1:abcdef", "names": ["/plex"]}]}}
+    det = {"docker": {"container": _FULL_CONTAINER}}
+    async with mocked_client([_resp(lst), _resp(det)]) as (c, r):
+        by_name = await docker.fetch_container(c, "plex")
+    assert r.call_count == 2
+    assert json.loads(r.calls[1].request.content)["query"] == queries.DOCKER_CONTAINER
+    assert _sent_vars(r) == {"id": "1:abcdef"}
+    async with mocked_client(_resp(det)) as (c, _):
+        by_id = await docker.fetch_container(c, "1:abcdef")
+    assert by_name == by_id
+
+
+async def test_container_name_lookup_detail_null_keeps_list_row(mocked_client):
+    lst = {"docker": {"containers": [{"id": "1:abcdef", "names": ["/plex"]}]}}
+    async with mocked_client([_resp(lst), _resp({"docker": {"container": None}})]) as (c, r):
         out = await docker.fetch_container(c, "plex")
     assert out["id"] == "1:abcdef"
-    assert r.call_count == 1
-    assert _sent_query(r) == queries.LIST_CONTAINERS
+    assert r.call_count == 2
 
 
 async def test_vms_with_domains_and_fallback(mocked_client):

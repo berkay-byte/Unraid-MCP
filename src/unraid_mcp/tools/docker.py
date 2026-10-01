@@ -103,6 +103,12 @@ async def fetch_container(client: UnraidClient, identifier: str) -> dict[str, An
             return native
     for container in await fetch_containers(client):
         if _matches(container, identifier):
+            # Resolved via the list: upgrade to the detail view by id (same
+            # output as an id lookup), keeping the list row if that yields nothing.
+            if container.get("id") and not _looks_like_id(identifier):
+                native = await fetch_container_native(client, container["id"])
+                if native is not None:
+                    return native
             return container
     raise ToolError(f"No Docker container matching '{identifier}'.")
 
@@ -441,8 +447,8 @@ def register(mcp: MCPServer, settings: Settings) -> None:
         (size_root_fs/size_rw/size_log as {bytes, human}) and Tailscale status.
         Sizes are expensive for the API to compute. `labels` is omitted
         (null, labels_truncated=true) when it serializes past 4096 chars.
-        Id lookups degrade to the basic fields on older Unraid API builds;
-        name lookups use the compact list fields only."""
+        Name lookups resolve to the id and return the same detail view. On older
+        Unraid API builds only the basic fields are returned."""
         return await guarded(ctx, fetch_container, identifier)
 
     @mcp.tool(annotations=READ_ONLY)
