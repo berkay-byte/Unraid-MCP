@@ -190,11 +190,14 @@ async def progress_reporter(ctx: Context) -> AsyncIterator[ProgressCallback]:
     try:
         yield _report
     finally:
-        with contextlib.suppress(Exception):
-            await asyncio.wait_for(queue.join(), timeout=PROGRESS_TIMEOUT_S)
-        task.cancel()
-        with contextlib.suppress(asyncio.CancelledError):
-            await task
+        try:
+            with contextlib.suppress(Exception):
+                await asyncio.wait_for(queue.join(), timeout=PROGRESS_TIMEOUT_S)
+        finally:
+            # Unconditional, even if the flush was cancelled: never leak the worker.
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 async def with_heartbeat(

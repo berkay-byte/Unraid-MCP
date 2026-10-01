@@ -264,3 +264,21 @@ async def test_with_heartbeat_without_callback_just_awaits():
         return 7
 
     assert await with_heartbeat(work(), None, interval_s=0.01) == 7
+
+
+async def test_cancelled_call_leaves_no_reporter_tasks(monkeypatch):
+    monkeypatch.setattr(_base, "PROGRESS_TIMEOUT_S", 5.0)
+    before = {t for t in asyncio.all_tasks() if not t.done()}
+
+    async def call():
+        async with progress_reporter(_StubCtx(stall=True)) as progress:
+            await progress("x")
+            await asyncio.sleep(0.05)  # let the worker pick it up and stall
+
+    task = asyncio.ensure_future(call())
+    await asyncio.sleep(0.1)  # call has exited its body and is inside the flush
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    await asyncio.sleep(0)
+    assert {t for t in asyncio.all_tasks() if not t.done()} == before
