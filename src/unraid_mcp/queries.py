@@ -171,8 +171,9 @@ query GetDockerUpdateStatuses {
 }
 """
 
-# Single-container detail: everything in the list view plus the expensive extras
-# (sizes, mounts, labels, tailscale). ``DOCKER_CONTAINER_BASIC`` is the older-API
+# Single-container detail: everything in the list view plus mounts, labels and
+# tailscale. NO sizes: upstream's single `container(id)` resolver always returns null
+# for them (see DOCKER_CONTAINER_SIZES). ``DOCKER_CONTAINER_BASIC`` is the older-API
 # fallback (same selection the tool used before #116).
 DOCKER_CONTAINER = """
 query GetDockerContainer($id: PrefixedID!) {
@@ -183,12 +184,19 @@ query GetDockerContainer($id: PrefixedID!) {
       iconUrl projectUrl supportUrl templatePath autoStartOrder autoStartWait
       hostConfig { networkMode }
       mounts labels
-      sizeRootFs sizeRw sizeLog
       tailscaleEnabled
       tailscaleStatus { online version updateAvailable hostname dnsName }
       ports { ip privatePort publicPort type }
     }
   }
+}
+"""
+
+# Sizes are only computed by upstream in the LIST resolver, and only when selected —
+# a full scan (~14s on a 39-container box). Used solely by include_sizes=true.
+DOCKER_CONTAINER_SIZES = """
+query GetDockerContainerSizes {
+  docker { containers { id sizeRootFs sizeRw sizeLog } }
 }
 """
 

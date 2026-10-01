@@ -275,8 +275,8 @@ def shape_container(c: dict | None) -> dict[str, Any] | None:
 
 
 def shape_container_detail(c: dict | None) -> dict[str, Any] | None:
-    """Single-container shape: the list view plus sizes, mounts, labels, links
-    and Tailscale. Sizes are bytes already (``{"bytes", "human"}``)."""
+    """Single-container shape: the list view plus mounts, labels, links
+    and Tailscale. Sizes are NOT included (see :func:`shape_container_sizes`)."""
     out = shape_container(c)
     if out is None or c is None:
         return out
@@ -294,9 +294,6 @@ def shape_container_detail(c: dict | None) -> dict[str, Any] | None:
             "mounts": c.get("mounts") or [],
             "labels": labels,
             "labels_truncated": labels_truncated,
-            "size_root_fs": _size_from_bytes(c.get("sizeRootFs")),
-            "size_rw": _size_from_bytes(c.get("sizeRw")),
-            "size_log": _size_from_bytes(c.get("sizeLog")),
             "tailscale_enabled": c.get("tailscaleEnabled"),
             "tailscale": (
                 {
@@ -312,6 +309,18 @@ def shape_container_detail(c: dict | None) -> dict[str, Any] | None:
         }
     )
     return out
+
+
+def shape_container_sizes(data: dict | None, container_id: str | None) -> dict[str, Any]:
+    """Pick one container's sizes out of the ``containers { id size* }`` list.
+    All three are null-sized when the container is absent from the list."""
+    docker = (data or {}).get("docker") or {}
+    row = next((c for c in (docker.get("containers") or []) if c.get("id") == container_id), {})
+    return {
+        "size_root_fs": _size_from_bytes(row.get("sizeRootFs")),
+        "size_rw": _size_from_bytes(row.get("sizeRw")),
+        "size_log": _size_from_bytes(row.get("sizeLog")),
+    }
 
 
 def shape_containers(data: dict | None) -> list[dict[str, Any]]:

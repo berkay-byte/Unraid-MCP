@@ -915,9 +915,6 @@ _FULL_CONTAINER = {
     "hostConfig": {"networkMode": "bridge"},
     "mounts": [{"Source": "/mnt/user/media", "Destination": "/media"}],
     "labels": {"net.unraid.docker.managed": "dockerman"},
-    "sizeRootFs": 2147483648,
-    "sizeRw": "1024",
-    "sizeLog": None,
     "tailscaleEnabled": True,
     "tailscaleStatus": {"online": True, "version": "1.60", "hostname": "plex"},
     "ports": [],
@@ -970,13 +967,12 @@ async def test_list_containers_other_error_not_swallowed(mocked_client):
     assert r.call_count == 1
 
 
-async def test_container_detail_fields_and_sizes(mocked_client):
+async def test_container_detail_fields_no_size_keys(mocked_client):
     async with mocked_client(_resp({"docker": {"container": _FULL_CONTAINER}})) as (c, r):
         out = await docker.fetch_container(c, "1:abcdef")
     assert r.call_count == 1
-    assert out["size_root_fs"] == {"bytes": 2147483648, "human": "2.0 GiB"}
-    assert out["size_rw"] == {"bytes": 1024, "human": "1.0 KiB"}
-    assert out["size_log"] == {"bytes": None, "human": None}
+    assert not any(k.startswith("size_") for k in out)
+    assert "sizeRootFs" not in _sent_query(r)
     assert out["mounts"] == _FULL_CONTAINER["mounts"]
     assert out["labels"] == _FULL_CONTAINER["labels"]
     assert out["labels_truncated"] is False
@@ -1000,7 +996,6 @@ async def test_container_detail_null_fields_and_big_labels(mocked_client):
     assert out["labels_truncated"] is True
     assert out["mounts"] == []
     assert out["tailscale"] is None
-    assert out["size_rw"] == {"bytes": None, "human": None}
 
 
 async def test_container_detail_older_api_falls_back_to_basic(mocked_client):
@@ -1017,7 +1012,6 @@ async def test_container_detail_older_api_falls_back_to_basic(mocked_client):
     assert r.call_count == 2
     assert json.loads(r.calls[1].request.content)["query"] == queries.DOCKER_CONTAINER_BASIC
     assert out["name"] == "x"
-    assert out["size_rw"] == {"bytes": None, "human": None}
 
 
 async def test_port_conflicts_happy(mocked_client):
@@ -1078,3 +1072,47 @@ async def test_port_conflicts_other_error_propagates(mocked_client):
     async with mocked_client(err) as (c, _):
         with pytest.raises(UnraidGraphQLError):
             await docker.fetch_docker_port_conflicts(c)
+
+
+_SIZES = {
+    "docker": {
+        "containers": [
+            {"id": "1:other", "sizeRootFs": 5, "sizeRw": 5, "sizeLog": 5},
+            {"id": "1:abcdef", "sizeRootFs": 2147483648, "sizeRw": "1024", "sizeLog": None},
+        ]
+    }
+}
+
+
+async def test_container_include_sizes_true(mocked_client):
+    det = {"docker": {"container": _FULL_CONTAINER}}
+    async with mocked_client([_resp(det), _resp(_SIZES)]) as (c, r):
+        out = await docker.fetch_container(c, "1:abcdef", include_sizes=True)
+    assert r.call_count == 2
+    assert json.loads(r.calls[1].request.content)["query"] == queries.DOCKER_CONTAINER_SIZES
+    assert out["size_root_fs"] == {"bytes": 2147483648, "human": "2.0 GiB"}
+    assert out["size_rw"] == {"bytes": 1024, "human": "1.0 KiB"}
+    assert out["size_log"] == {"bytes": None, "human": None}
+    assert out["id"] == "1:abcdef"
+
+
+async def test_container_include_sizes_missing_container_is_null(mocked_client):
+    det = {"docker": {"container": _FULL_CONTAINER}}
+    other = {"docker": {"containers": [{"id": "1:other", "sizeRw": 5}]}}
+    async with mocked_client([_resp(det), _resp(other)]) as (c, _):
+        out = await docker.fetch_container(c, "1:abcdef", include_sizes=True)
+    assert out["size_rw"] == {"bytes": None, "human": None}
+
+
+async def test_container_include_sizes_unsupported_api(mocked_client):
+    det = {"docker": {"container": _FULL_CONTAINER}}
+    err = httpx.Response(
+        200,
+        json={
+            "errors": [{"message": 'Cannot query field "sizeRw" on type "DockerContainer".'}],
+            "data": None,
+        },
+    )
+    async with mocked_client([_resp(det), err]) as (c, _):
+        with pytest.raises(ToolError, match="sizes"):
+            await docker.fetch_container(c, "1:abcdef", include_sizes=True)

@@ -16,6 +16,7 @@ from ..formatting import (
     sanitize_control,
     shape_container_detail,
     shape_container_logs,
+    shape_container_sizes,
     shape_container_stats,
     shape_containers,
     shape_docker_networks,
@@ -96,7 +97,28 @@ async def fetch_container_native(client: UnraidClient, container_id: str) -> dic
     return shape_container_detail(container)
 
 
-async def fetch_container(client: UnraidClient, identifier: str) -> dict[str, Any]:
+async def fetch_container(
+    client: UnraidClient,
+    identifier: str,
+    include_sizes: bool = False,
+    *,
+    api_version: str | None = None,
+) -> dict[str, Any]:
+    container = await _resolve_container(client, identifier)
+    if include_sizes:
+        try:
+            data = await client.execute(queries.DOCKER_CONTAINER_SIZES)
+        except UnraidGraphQLError as exc:
+            if unsupported_field_error(exc):
+                raise feature_unsupported(
+                    "Docker container sizes", api_version=api_version
+                ) from None
+            raise
+        container = {**container, **shape_container_sizes(data, container.get("id"))}
+    return container
+
+
+async def _resolve_container(client: UnraidClient, identifier: str) -> dict[str, Any]:
     if _looks_like_id(identifier):
         native = await fetch_container_native(client, identifier)
         if native is not None:
@@ -439,17 +461,24 @@ def register(mcp: MCPServer, settings: Settings) -> None:
         return await guarded(ctx, fetch_containers)
 
     @mcp.tool(annotations=READ_ONLY)
-    async def get_docker_container(ctx: Context, identifier: str) -> dict[str, Any]:
+    async def get_docker_container(
+        ctx: Context, identifier: str, include_sizes: bool = False
+    ) -> dict[str, Any]:
         """Get one Docker container by id or name.
 
         Adds to the list fields: rebuild_ready, lan_ip_ports, icon/project/support
-        URLs, template_path, auto_start_wait, mounts, labels, sizes
-        (size_root_fs/size_rw/size_log as {bytes, human}) and Tailscale status.
-        Sizes are expensive for the API to compute. `labels` is omitted
+        URLs, template_path, auto_start_wait, mounts, labels and Tailscale
+        status. Size keys are omitted unless include_sizes=true, which adds
+        size_root_fs/size_rw/size_log as {bytes, human} (null if the container
+        is missing from the scan). include_sizes is SLOW (~10-20s): the API only
+        computes sizes by scanning ALL containers. `labels` is omitted
         (null, labels_truncated=true) when it serializes past 4096 chars.
         Name lookups resolve to the id and return the same detail view. On older
         Unraid API builds only the basic fields are returned."""
-        return await guarded(ctx, fetch_container, identifier)
+        api_version = get_app_context(ctx).api_version
+        return await guarded(
+            ctx, fetch_container, identifier, include_sizes, api_version=api_version
+        )
 
     @mcp.tool(annotations=READ_ONLY)
     async def get_docker_port_conflicts(ctx: Context) -> dict[str, Any]:
