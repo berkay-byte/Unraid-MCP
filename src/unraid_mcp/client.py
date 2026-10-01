@@ -46,8 +46,17 @@ class UnraidClient:
         self._http = http_client
         self._host = host_label or urlparse(url).netloc or url
 
-    async def execute(self, query: str, variables: dict[str, Any] | None = None) -> dict[str, Any]:
+    async def execute(
+        self,
+        query: str,
+        variables: dict[str, Any] | None = None,
+        *,
+        strict: bool = False,
+    ) -> dict[str, Any]:
         """Run a GraphQL operation and return its ``data`` object.
+
+        With ``strict=True`` ANY GraphQL error raises, even when partial ``data``
+        came back (use for reads that feed a destructive read-modify-write).
 
         Raises an :class:`~unraid_mcp.errors.UnraidError` subclass on failure.
         The API key is never included in any error message.
@@ -112,7 +121,7 @@ class UnraidClient:
             # structure so the exception's .errors attribute is also safe.
             errors = self._redact_obj(raw_errors)
             messages = "; ".join(str(e.get("message", "unknown error")) for e in errors)
-            if data is None:
+            if data is None or strict:
                 raise UnraidGraphQLError(f"GraphQL error: {messages}", errors=errors)
             # Partial success — Unraid returned some data plus non-fatal errors
             # (e.g. an optional field unavailable on this build). Surface a

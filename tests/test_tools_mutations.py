@@ -1056,7 +1056,7 @@ async def test_set_autostart_concurrent_calls_do_not_lose_updates():
 
     enabled: list[str] = []  # server-side state, mutated by the mutation handler
 
-    def handler(request):
+    async def handler(request):
         body = json.loads(request.content)
         if body["query"] == queries.DOCKER_AUTOSTART_STATE:
             cs = [
@@ -1069,6 +1069,7 @@ async def test_set_autostart_concurrent_calls_do_not_lose_updates():
                 }
                 for cid in ("1:a", "1:b")
             ]
+            await asyncio.sleep(0.05)  # yield after the snapshot so reads overlap
             return httpx.Response(200, json={"data": {"docker": {"containers": cs}}})
         enabled[:] = [e["id"] for e in body["variables"]["entries"]]
         return httpx.Response(200, json=_OK)
@@ -1086,3 +1087,21 @@ async def test_set_autostart_concurrent_calls_do_not_lose_updates():
                 ),
             )
     assert sorted(enabled) == ["1:a", "1:b"]
+
+
+async def test_set_autostart_partial_read_errors_abort_before_mutation(mocked_client):
+    partial = {
+        "data": _STATE["data"],
+        "errors": [{"message": "autoStartWait unavailable", "path": ["docker"]}],
+    }
+    async with mocked_client(
+        [httpx.Response(200, json=partial), httpx.Response(200, json=_OK)]
+    ) as (
+        client,
+        route,
+    ):
+        with pytest.raises(UnraidGraphQLError):
+            await docker.do_set_docker_autostart(
+                client, [{"id": "1:a", "auto_start": True}], confirm=True
+            )
+        assert route.call_count == 1  # only the read

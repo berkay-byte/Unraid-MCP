@@ -527,12 +527,13 @@ async def do_set_docker_autostart(
     order = _validate_order(order)
     try:
         async with _autostart_lock(client):
-            state = await client.execute(queries.DOCKER_AUTOSTART_STATE)
+            state = await client.execute(queries.DOCKER_AUTOSTART_STATE, strict=True)
             containers = ((state or {}).get("docker") or {}).get("containers") or []
             full = _merge_autostart(containers, changes, order)
             result = await client.execute(
                 queries.UPDATE_DOCKER_AUTOSTART,
                 {"entries": full, "persist": persist_user_preferences},
+                strict=True,
             )
     except UnraidGraphQLError as exc:
         if unsupported_field_error(exc):
