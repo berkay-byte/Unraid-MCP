@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import logging
 from unittest.mock import MagicMock
 
 import pytest
 
 from unraid_mcp import cli
+from unraid_mcp.errors import UnraidConfigError
 
 TOKEN = "0123456789abcdef0123456789abcdef"
 
@@ -82,10 +84,66 @@ def _capture_serve_http(monkeypatch):
     return captured
 
 
-def test_serve_http_generates_token_when_absent(settings_factory, monkeypatch):
+def test_main_generates_token_on_localhost_and_redacts_it(clean_env, monkeypatch, capsys, caplog):
+    clean_env.setenv("UNRAID_API_URL", "https://tower.local/graphql")
+    clean_env.setenv("UNRAID_API_KEY", "supersecretkey123")
+    clean_env.setenv("UNRAID_MCP_TRANSPORT", "streamable-http")
+    clean_env.setenv("UNRAID_MCP_HOST", "127.0.0.1")
+    seen = {}
+
+    def fake_build(settings):
+        seen["settings"] = settings
+        return MagicMock()
+
+    def fake_serve(mcp, settings):
+        logging.getLogger("unraid_mcp.test").warning(
+            "later line leaks %s", settings.bearer_token.get_secret_value()
+        )
+
+    monkeypatch.setattr(cli, "build_server", fake_build)
+    monkeypatch.setattr(cli, "_serve_http", fake_serve)
+    with caplog.at_level("DEBUG"):
+        assert cli.main() == 0
+    token = seen["settings"].bearer_token.get_secret_value()  # reaches build_server/client
+    assert len(token) >= 20  # a generated random token
+    startup = [r for r in caplog.records if r.name == "unraid_mcp.cli" and token in r.getMessage()]
+    assert len(startup) == 1  # the startup line is the only record carrying it
+    err = capsys.readouterr().err
+    assert token not in err.split("later line")[1]
+    assert "later line leaks ***REDACTED***" in err
+
+
+def test_serve_http_refuses_generated_token_on_non_localhost(settings_factory, monkeypatch, caplog):
     captured = _capture_serve_http(monkeypatch)
-    cli._serve_http(MagicMock(), settings_factory(transport="streamable-http"))
-    assert len(captured["token"]) >= 20  # a generated random token
+    with caplog.at_level("DEBUG"), pytest.raises(UnraidConfigError) as exc:
+        cli._serve_http(MagicMock(), settings_factory(transport="streamable-http", host="0.0.0.0"))
+    assert "UNRAID_MCP_BEARER_TOKEN is required" in str(exc.value)
+    assert "secrets.token_urlsafe(32)" in str(exc.value)
+    assert "token" not in captured  # never reached the auth middleware / server
+    assert "Bearer <token>" not in caplog.text  # no generated-token log line
+
+
+def test_main_exits_nonzero_on_non_localhost_without_token(clean_env, monkeypatch, capsys):
+    clean_env.setenv("UNRAID_API_URL", "https://tower.local/graphql")
+    clean_env.setenv("UNRAID_API_KEY", "supersecretkey123")
+    clean_env.setenv("UNRAID_MCP_TRANSPORT", "streamable-http")
+    clean_env.setenv("UNRAID_MCP_HOST", "0.0.0.0")
+    monkeypatch.setattr(cli, "build_server", lambda settings: MagicMock())
+    assert cli.main() == 1
+    err = capsys.readouterr().err
+    assert "UNRAID_MCP_BEARER_TOKEN is required" in err
+    assert "Bearer <token>" not in err
+    assert "generated one" not in err
+
+
+def test_serve_http_never_logs_configured_token(settings_factory, monkeypatch, caplog):
+    _capture_serve_http(monkeypatch)
+    with caplog.at_level("DEBUG"):
+        cli._serve_http(
+            MagicMock(),
+            settings_factory(transport="streamable-http", host="0.0.0.0", bearer_token=TOKEN),
+        )
+    assert TOKEN not in caplog.text
 
 
 def test_serve_http_uses_provided_token(settings_factory, monkeypatch):
