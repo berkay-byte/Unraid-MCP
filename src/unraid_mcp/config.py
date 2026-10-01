@@ -73,10 +73,10 @@ class Settings(BaseSettings):
     allow_raw_query: bool = Field(default=False, validation_alias="UNRAID_MCP_ALLOW_RAW_QUERY")
 
     # ── Misc ───────────────────────────────────────────────────────────
-    timeout: float = Field(default=30.0, validation_alias="UNRAID_MCP_TIMEOUT")
+    timeout: float = Field(default=30.0, gt=0, validation_alias="UNRAID_MCP_TIMEOUT")
     # Per-call HTTP timeout for mutations that block on slow work (image pulls,
     # array start/stop). Reads and quick mutations keep ``timeout``.
-    long_timeout: float = Field(default=600.0, validation_alias="UNRAID_MCP_LONG_TIMEOUT")
+    long_timeout: float = Field(default=600.0, gt=0, validation_alias="UNRAID_MCP_LONG_TIMEOUT")
     log_level: str = Field(default="INFO", validation_alias="UNRAID_MCP_LOG_LEVEL")
 
     @field_validator("api_url")

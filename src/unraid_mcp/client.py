@@ -40,14 +40,21 @@ class UnraidClient:
         http_client: httpx.AsyncClient,
         *,
         host_label: str | None = None,
+        timeout: float = 30.0,
         long_timeout: float = 600.0,
     ) -> None:
         self._url = url
         self._key = api_key.get_secret_value() if isinstance(api_key, SecretStr) else api_key
         self._http = http_client
         self._host = host_label or urlparse(url).netloc or url
-        # Timeout (seconds) tools pass to ``execute`` for slow, synchronous mutations.
+        self.timeout = timeout
         self.long_timeout = long_timeout
+
+    @property
+    def long_request_timeout(self) -> httpx.Timeout:
+        """Timeout for slow, synchronous mutations: only *read* is long, so
+        connect/write/pool still fail fast on an unreachable server."""
+        return httpx.Timeout(self.timeout, read=self.long_timeout)
 
     async def execute(
         self,
@@ -73,7 +80,7 @@ class UnraidClient:
                 timeout=httpx.USE_CLIENT_DEFAULT if timeout is None else timeout,
             )
         except httpx.TimeoutException as exc:
-            if timeout is not None:
+            if timeout is not None and isinstance(exc, httpx.ReadTimeout):
                 raise UnraidConnectionError(
                     f"Timed out waiting for Unraid at {self._host} to finish a long-running "
                     "operation. It may still be running on the server: check its status "

@@ -317,7 +317,7 @@ async def do_update_container(
         )
     try:
         result = await client.execute(
-            queries.UPDATE_CONTAINER, {"id": container_id}, timeout=client.long_timeout
+            queries.UPDATE_CONTAINER, {"id": container_id}, timeout=client.long_request_timeout
         )
     except UnraidGraphQLError as exc:
         if unsupported_field_error(exc):
@@ -348,7 +348,7 @@ async def do_update_containers(
         )
     try:
         result = await client.execute(
-            queries.UPDATE_CONTAINERS, {"ids": container_ids}, timeout=client.long_timeout
+            queries.UPDATE_CONTAINERS, {"ids": container_ids}, timeout=client.long_request_timeout
         )
     except UnraidGraphQLError as exc:
         if unsupported_field_error(exc):
@@ -369,7 +369,9 @@ async def do_update_all_containers(
     """Pull + recreate EVERY container that has an available image update."""
     require_confirm(confirm, "update (pull + recreate) EVERY container with an available update")
     try:
-        result = await client.execute(queries.UPDATE_ALL_CONTAINERS, timeout=client.long_timeout)
+        result = await client.execute(
+            queries.UPDATE_ALL_CONTAINERS, timeout=client.long_request_timeout
+        )
     except UnraidGraphQLError as exc:
         if unsupported_field_error(exc):
             raise feature_unsupported("Docker container updates", api_version=api_version) from None

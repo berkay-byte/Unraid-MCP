@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import json
 
 import httpx
@@ -862,17 +861,28 @@ def _read_timeout(route) -> float:
 
 
 async def test_docker_updates_use_long_timeout(mocked_client):
-    ok = httpx.Response(200, json={"data": {"docker": {}}})
-    for call in (
-        lambda c: docker.do_update_container(c, "1:abc", confirm=True),
-        lambda c: docker.do_update_containers(c, ["1:abc"], confirm=True),
-        lambda c: docker.do_update_all_containers(c, confirm=True),
-    ):
+    row = {"id": "1:abc", "names": ["/a"], "state": "RUNNING", "status": "Up"}
+    cases = (
+        (lambda c: docker.do_update_container(c, "1:abc", confirm=True), "updateContainer", row),
+        (
+            lambda c: docker.do_update_containers(c, ["1:abc"], confirm=True),
+            "updateContainers",
+            [row],
+        ),
+        (
+            lambda c: docker.do_update_all_containers(c, confirm=True),
+            "updateAllContainers",
+            [row],
+        ),
+    )
+    for call, field, payload in cases:
+        ok = httpx.Response(200, json={"data": {"docker": {field: payload}}})
         async with mocked_client(ok) as (client, route):
-            with contextlib.suppress(Exception):  # shaping of the empty body is irrelevant
-                await call(client)
+            await call(client)
             assert route.call_count == 1
-            assert _read_timeout(route) == client.long_timeout == 600.0
+            t = route.calls.last.request.extensions["timeout"]
+            assert t["read"] == client.long_timeout == 600.0
+            assert t["connect"] == t["write"] == t["pool"] == client.timeout != 600.0
 
 
 async def test_array_start_stop_use_long_timeout(mocked_client):
@@ -881,6 +891,14 @@ async def test_array_start_stop_use_long_timeout(mocked_client):
         async with mocked_client(ok) as (client, route):
             await call(client, confirm=True)
             assert _read_timeout(route) == 600.0
+
+
+async def test_connect_timeout_on_long_call_keeps_reachability_message(mocked_client):
+    async with mocked_client([httpx.ConnectTimeout("nope")]) as (client, _route):
+        with pytest.raises(UnraidConnectionError) as exc:
+            await docker.do_update_container(client, "1:abc", confirm=True)
+        assert "may still be running" not in str(exc.value)
+        assert "reachable" in str(exc.value)
 
 
 async def test_docker_update_timeout_says_may_still_be_running(mocked_client):

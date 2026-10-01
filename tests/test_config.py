@@ -231,3 +231,13 @@ def test_port_and_timeout_coerced_from_strings(clean_env):
     s = load_settings(_env_file=None)
     assert s.port == 7000
     assert s.timeout == 12.5
+
+
+@pytest.mark.parametrize("var", ["UNRAID_MCP_TIMEOUT", "UNRAID_MCP_LONG_TIMEOUT"])
+@pytest.mark.parametrize("bad", ["0", "-5"])
+def test_timeouts_must_be_positive(clean_env, var, bad):
+    for k, v in REQUIRED.items():
+        clean_env.setenv(k, v)
+    clean_env.setenv(var, bad)
+    with pytest.raises(UnraidConfigError):
+        load_settings(_env_file=None)
