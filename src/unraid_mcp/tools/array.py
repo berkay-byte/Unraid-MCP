@@ -13,6 +13,7 @@ from ..config import Settings
 from ..errors import UnraidGraphQLError
 from ..formatting import (
     shape_array_status,
+    shape_mutation_json_result,
     shape_mutation_result,
     shape_physical_disk,
     shape_physical_disks,
@@ -65,12 +66,12 @@ async def fetch_disk(client: UnraidClient, disk_id: str) -> dict[str, Any]:
 
 async def do_start_array(client: UnraidClient, confirm: bool) -> dict[str, Any]:
     require_confirm(confirm, "start the Unraid array")
-    return shape_mutation_result(await client.execute(queries.START_ARRAY))
+    return shape_mutation_result(await client.execute(queries.START_ARRAY), ("array", "setState"))
 
 
 async def do_stop_array(client: UnraidClient, confirm: bool) -> dict[str, Any]:
     require_confirm(confirm, "stop the Unraid array (this unmounts all disks)")
-    return shape_mutation_result(await client.execute(queries.STOP_ARRAY))
+    return shape_mutation_result(await client.execute(queries.STOP_ARRAY), ("array", "setState"))
 
 
 async def do_start_parity(client: UnraidClient, correct: bool, confirm: bool) -> dict[str, Any]:
@@ -80,22 +81,30 @@ async def do_start_parity(client: UnraidClient, correct: bool, confirm: bool) ->
         else "start a parity check"
     )
     require_confirm(confirm, label)
-    return shape_mutation_result(await client.execute(queries.START_PARITY, {"correct": correct}))
+    return shape_mutation_json_result(
+        await client.execute(queries.START_PARITY, {"correct": correct}), ("parityCheck", "start")
+    )
 
 
 async def do_pause_parity(client: UnraidClient, confirm: bool) -> dict[str, Any]:
     require_confirm(confirm, "pause the parity check")
-    return shape_mutation_result(await client.execute(queries.PAUSE_PARITY))
+    return shape_mutation_json_result(
+        await client.execute(queries.PAUSE_PARITY), ("parityCheck", "pause")
+    )
 
 
 async def do_resume_parity(client: UnraidClient, confirm: bool) -> dict[str, Any]:
     require_confirm(confirm, "resume the parity check")
-    return shape_mutation_result(await client.execute(queries.RESUME_PARITY))
+    return shape_mutation_json_result(
+        await client.execute(queries.RESUME_PARITY), ("parityCheck", "resume")
+    )
 
 
 async def do_cancel_parity(client: UnraidClient, confirm: bool) -> dict[str, Any]:
     require_confirm(confirm, "cancel the parity check")
-    return shape_mutation_result(await client.execute(queries.CANCEL_PARITY))
+    return shape_mutation_json_result(
+        await client.execute(queries.CANCEL_PARITY), ("parityCheck", "cancel")
+    )
 
 
 # ── Dangerous-tier logic ────────────────────────────────────────────────────
@@ -109,7 +118,9 @@ def _require_disk_id(disk_id: str) -> None:
 async def do_mount_array_disk(client: UnraidClient, disk_id: str, confirm: bool) -> dict[str, Any]:
     require_confirm(confirm, f"mount disk '{disk_id}' in the array (brings the disk online)")
     _require_disk_id(disk_id)
-    return shape_mutation_result(await client.execute(queries.MOUNT_ARRAY_DISK, {"id": disk_id}))
+    return shape_mutation_result(
+        await client.execute(queries.MOUNT_ARRAY_DISK, {"id": disk_id}), ("array", "mountArrayDisk")
+    )
 
 
 async def do_unmount_array_disk(
@@ -121,7 +132,10 @@ async def do_unmount_array_disk(
         "(data on it becomes inaccessible until remounted)",
     )
     _require_disk_id(disk_id)
-    return shape_mutation_result(await client.execute(queries.UNMOUNT_ARRAY_DISK, {"id": disk_id}))
+    return shape_mutation_result(
+        await client.execute(queries.UNMOUNT_ARRAY_DISK, {"id": disk_id}),
+        ("array", "unmountArrayDisk"),
+    )
 
 
 async def do_clear_disk_statistics(
@@ -134,7 +148,8 @@ async def do_clear_disk_statistics(
     )
     _require_disk_id(disk_id)
     return shape_mutation_result(
-        await client.execute(queries.CLEAR_ARRAY_DISK_STATISTICS, {"id": disk_id})
+        await client.execute(queries.CLEAR_ARRAY_DISK_STATISTICS, {"id": disk_id}),
+        ("array", "clearArrayDiskStatistics"),
     )
 
 
@@ -152,7 +167,10 @@ async def do_add_disk_to_array(
     input_: dict[str, Any] = {"id": disk_id}
     if slot is not None:
         input_["slot"] = slot
-    return shape_mutation_result(await client.execute(queries.ADD_DISK_TO_ARRAY, {"input": input_}))
+    return shape_mutation_result(
+        await client.execute(queries.ADD_DISK_TO_ARRAY, {"input": input_}),
+        ("array", "addDiskToArray"),
+    )
 
 
 def register(mcp: MCPServer, settings: Settings) -> None:
